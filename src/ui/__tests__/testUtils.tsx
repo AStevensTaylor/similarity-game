@@ -12,12 +12,20 @@ import { RAW_GATE, SCORE_GATE, type Embedder } from '../../similarity';
 // change (PHASE_TAP_GUARD_MS), so press() moves time forward first, the way a
 // person takes a moment before tapping; pressNow() does not, like the second
 // tap of a double tap.
+//
+// pressNow() pins the clock to the moment of the last deliberate press (or to import
+// time) while its handler runs. Every step starts at or after that moment, so the tap
+// always counts as "too soon" - even on a slow machine where more real time than the
+// guard has passed since the previous press or the first render.
 const realNow = Date.now.bind(Date);
 let clockOffset = 0;
-Date.now = () => realNow() + clockOffset;
+let pinnedAt: number | null = null;
+let lastDeliberatePressAt = realNow();
+Date.now = () => pinnedAt ?? realNow() + clockOffset;
 
 export function advanceClock(ms: number): void {
   clockOffset += ms;
+  lastDeliberatePressAt = realNow() + clockOffset;
 }
 
 /** Longer than any tap guard in the app. */
@@ -89,13 +97,22 @@ export async function render(element: ReactElement): Promise<Rendered> {
     return out;
   };
 
-  const pressNow = async (id: string): Promise<void> => {
+  const doPress = async (id: string): Promise<void> => {
     const handler = findHandler(byTestId(id), 'onPress');
     if (handler === null) throw new Error(`"${id}" is not pressable (or is disabled).`);
     await act(async () => {
       handler();
     });
     await flush();
+  };
+
+  const pressNow = async (id: string): Promise<void> => {
+    pinnedAt = lastDeliberatePressAt;
+    try {
+      await doPress(id);
+    } finally {
+      pinnedAt = null;
+    }
   };
 
   return {
@@ -106,7 +123,7 @@ export async function render(element: ReactElement): Promise<Rendered> {
     queryByTestId,
     async press(id) {
       advanceClock(TAP_PAUSE_MS);
-      await pressNow(id);
+      await doPress(id);
     },
     pressNow,
     handler(id, name) {
