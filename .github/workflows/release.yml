@@ -67,6 +67,10 @@ defaults:
 
 env:
   EXPO_NO_TELEMETRY: '1'
+  # onnxruntime-node is a dev dependency used only by the calibration tool. Its postinstall
+  # downloads optional GPU libraries from nuget.org, which nothing here needs and which made
+  # `npm ci` fail on a network timeout; the CPU library is already inside the npm package.
+  ONNXRUNTIME_NODE_INSTALL: skip
   NODE_VERSION: '24' # bundles npm 11, the version that wrote package-lock.json
 
 jobs:

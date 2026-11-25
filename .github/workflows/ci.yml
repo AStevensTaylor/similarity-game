@@ -16,6 +16,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # onnxruntime-node is a dev dependency used only by the calibration tool. Its postinstall
+  # downloads optional GPU libraries from nuget.org, which nothing here needs and which made
+  # `npm ci` fail on a network timeout; the CPU library is already inside the npm package.
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   test:
     name: Type-check and tests
