@@ -1,0 +1,723 @@
+# Builds a sideloadable Android APK and an UNSIGNED iOS IPA and attaches both to a GitHub
+# Release. See the "Releases" section of README.md for the user-facing description.
+#
+#   push of a tag vX.Y.Z[-suffix]  -> published release for that tag
+#   manual run (workflow_dispatch) -> release for v<version>, a draft unless "draft" is unticked
+#
+# Publishing a draft from the Releases page creates the tag as a user, which is itself a tag
+# push and starts this workflow again. That run finds the published release with both files
+# and builds nothing (see `skip` in the test job), so the published files are never replaced.
+#
+# Job graph:   test -> android --+
+#                   -> ios ------+-> release
+#
+# Failure policy (deliberate):
+#   * test fails            -> nothing is built or released.
+#   * one platform fails    -> the other platform IS released, the release notes say which one
+#                              is missing, and the release job then fails on purpose so the run
+#                              is red. "Re-run failed jobs" rebuilds only the failed platform
+#                              and adds its file to the same release.
+#   * both platforms fail   -> no release; the run is red.
+#
+# Security notes:
+#   * Only the release job can write to the repository. Jobs that run third-party code (npm
+#     install scripts, Gradle plugins, CocoaPods) get a read-only token that is not persisted.
+#   * The Android signing key is never in the environment or on disk while project code runs:
+#     Gradle builds without it and `apksigner` signs the finished APK in a later step. (Same
+#     job, so this stops code that reads the environment or the disk during the build, not
+#     code that tampers with the runner for later steps.)
+#   * Tag names and manual inputs reach shell scripts through `env:`, never by `${{ }}`
+#     interpolation inside `run:`.
+#   * Actions are pinned to full commit SHAs; Dependabot (.github/dependabot.yml) updates them.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version, e.g. 1.2.3 or 1.2.3-rc.1. Empty: the tag the run was started from, else the version in app.json.'
+        required: false
+        type: string
+        default: ''
+      draft:
+        description: 'Create the release as a draft (visible to maintainers only; no tag is created until it is published).'
+        type: boolean
+        default: true
+      prerelease:
+        description: 'Mark the release as a pre-release.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# One release run per ref at a time, and never cancel one: a cancelled run could leave a
+# half-populated release behind.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # Explicit bash gives every script `set -eo pipefail`.
+    shell: bash
+
+env:
+  EXPO_NO_TELEMETRY: '1'
+  NODE_VERSION: '24' # bundles npm 11, the version that wrote package-lock.json
+
+jobs:
+  # ---------------------------------------------------------------------------------------------
+  test:
+    name: Type-check and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      draft: ${{ steps.meta.outputs.draft }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      skip: ${{ steps.meta.outputs.skip }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm # explicit: package.json has no "packageManager" field to auto-detect
+
+      # Runs before the slow steps so a bad version fails in seconds, not after two builds.
+      - name: Work out version, tag and release flags
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DRAFT: ${{ inputs.draft }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          GH_TOKEN: ${{ github.token }} # read-only; used for the tag and release lookups below
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            draft=false
+            prerelease=false
+          else
+            version="${INPUT_VERSION#v}"
+            if [[ -z "$version" && "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" == v* ]]; then
+              version="${GITHUB_REF_NAME#v}"
+            fi
+            if [[ -z "$version" ]]; then
+              version="$(node -p "require('./app.json').expo.version")"
+            fi
+            draft="$INPUT_DRAFT"
+            prerelease="$INPUT_PRERELEASE"
+          fi
+
+          # Strict on purpose: the value ends up in file names, a tag name and both apps.
+          # (The value itself is not echoed in the error: it is untrusted until it matches.)
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]]; then
+            echo "::error::The version must look like 1.2.3 or 1.2.3-rc.1 (tags: v1.2.3 or v1.2.3-rc.1)."
+            exit 1
+          fi
+          tag="v$version"
+
+          # 1.2.3-rc.1 and friends are always pre-releases.
+          if [[ "$version" == *-* ]]; then prerelease=true; fi
+
+          # A manual run must not attach files built from this commit to a tag that already
+          # points at a different commit. (On a tag push the tag is this commit by definition.)
+          # matching-refs answers 200 with an empty list when the tag does not exist, so a
+          # failure of either call is a real error and stops the run instead of passing for
+          # "no such tag".
+          if [[ "$GITHUB_EVENT_NAME" != push ]]; then
+            refs="$(gh api "repos/$GH_REPO/git/matching-refs/tags/$tag" --jq '.[].ref')"
+            if grep -qxF "refs/tags/$tag" <<< "$refs"; then
+              tag_sha="$(gh api "repos/$GH_REPO/commits/tags/$tag" --jq .sha)" # peels annotated tags
+              if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+                echo "::error::Tag $tag already exists and points at another commit. Start the run from that tag (Run workflow > Use workflow from > Tags) or choose a new version."
+                exit 1
+              fi
+            fi
+          fi
+
+          # A tag push for which a published release already carries both files: the tag was
+          # created by publishing a draft from the Releases page. Build nothing, so the files
+          # that were reviewed and published stay as they are. First attempt only: "Re-run
+          # all jobs" is an explicit request to rebuild and replace them.
+          # (This endpoint only returns published releases, never drafts.)
+          skip=false
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_RUN_ATTEMPT" == 1 ]]; then
+            if assets="$(gh api "repos/$GH_REPO/releases/tags/$tag" --jq '[.assets[].name] | join(" ")' 2>&1)"; then
+              if [[ "$assets" == *.apk* && "$assets" == *.ipa* ]]; then
+                skip=true
+                echo "::notice title=Nothing to build::Release $tag is already published with an APK and an IPA (a draft published by hand). Use 'Re-run all jobs' to rebuild and replace them."
+              fi
+            elif [[ "$assets" != *"HTTP 404"* ]]; then
+              echo "::error::Could not check whether release $tag already exists."
+              printf '%s\n' "$assets"
+              exit 1
+            fi
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "draft=$draft"
+            echo "prerelease=$prerelease"
+            echo "skip=$skip"
+          } >> "$GITHUB_OUTPUT"
+          if [[ "$skip" == true ]]; then
+            echo "Release $tag is already published with both files; nothing was built." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Releasing $tag (draft=$draft, prerelease=$prerelease), build number $GITHUB_RUN_NUMBER" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Do not add --ignore-scripts: the root postinstall (patch-package) must run.
+      # RNET_SKIP_DOWNLOAD: tsc and jest never load the ExecuTorch native libraries.
+      - name: Install dependencies
+        env:
+          RNET_SKIP_DOWNLOAD: '1'
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npx jest --ci
+
+  # ---------------------------------------------------------------------------------------------
+  android:
+    name: Android APK
+    needs: test
+    # Skipped (and with it the release job) when the release is already complete; see `skip`.
+    if: ${{ needs.test.outputs.skip != 'true' }}
+    # Pinned: ubuntu-latest (26.04) defaults to JDK 25, and React Native 0.88 wants JDK 17.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    # No file name is passed as a job output: the runner drops any job output that contains
+    # the value of a secret, and the release job can work the name out from `signing`.
+    outputs:
+      signing: ${{ steps.sign.outputs.signing }}
+    env:
+      # Read by app.config.js at prebuild time: versionName and versionCode.
+      APP_VERSION: ${{ needs.test.outputs.version }}
+      APP_BUILD_NUMBER: ${{ github.run_number }}
+      # The release APK ships arm64-v8a only (every phone that can run Android 8+ with this
+      # app's requirements); x86_64 is for emulators and would add about 17 MB of ExecuTorch.
+      RELEASE_ABIS: arm64-v8a
+      # react-native-executorch postinstall: download only what this job links.
+      RNET_TARGET: android-arm64-v8a
+      # Versions React Native 0.88.1 asks for (node_modules/react-native/gradle/libs.versions.toml)
+      # and the CMake that shell.nix uses for local builds. The runner image ships NDK 27.3 and
+      # CMake 3.31/4.1 instead, so they are installed explicitly below.
+      NDK_VERSION: 27.1.12297006
+      CMAKE_VERSION: 3.22.1
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The postinstall re-validates checksums against GitHub when it can, and falls back to
+      # this cache when GitHub Releases is unreachable.
+      - name: Cache ExecuTorch native libraries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/react-native-executorch
+          key: rne-libs-android-${{ hashFiles('package-lock.json') }}
+          restore-keys: rne-libs-android-
+
+      # No GITHUB_TOKEN in this step's environment on purpose: the ExecuTorch download script
+      # would send it as a Bearer header, and the public download does not need it.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check that install scripts ran
+        run: |
+          # A newer npm that skips dependency install scripts would otherwise only show up
+          # much later as an obscure Gradle or CMake error.
+          test -f node_modules/react-native-executorch/rne-build-config.json
+          test -d node_modules/react-native-executorch/third-party/include
+          test -f node_modules/react-native-executorch/third-party/android/libs/executorch/arm64-v8a/libexecutorch.so
+          # patch-package (root postinstall) applied patches/react-native-tcp-socket+*.patch
+          npx patch-package --error-on-fail
+
+      - name: Install the NDK and CMake versions the build asks for
+        run: |
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$sdkmanager" --licenses > /dev/null || true
+          "$sdkmanager" --install "ndk;$NDK_VERSION" "cmake;$CMAKE_VERSION" > /dev/null
+          test -d "$ANDROID_HOME/ndk/$NDK_VERSION"
+          test -d "$ANDROID_HOME/cmake/$CMAKE_VERSION"
+
+      # android/ is not committed (Continuous Native Generation); this creates it, with the
+      # version from the env.
+      - name: Generate the Android project
+        run: npx expo prebuild --platform android --no-install
+
+      # Default cache behaviour: only runs on the default branch write the Gradle cache, and
+      # tag runs read it. A manual run on main is what warms it.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+
+      # No secrets here: this one process tree runs every Gradle plugin, Metro, Babel and the
+      # build-time code of every npm dependency. Gradle therefore signs with the template's
+      # debug key and says so in its log (plugins/withAndroidReleaseSigning.js only switches
+      # to a real key when ANDROID_KEYSTORE_FILE is set, which is for local builds); the real
+      # signature is applied by the next step.
+      - name: Build the release APK
+        working-directory: android
+        env:
+          NODE_ENV: production
+        run: |
+          # R8 (minification is on by default in Expo SDK 58) is memory-hungry; the generated
+          # gradle.properties allows only 2 GB.
+          ./gradlew :app:assembleRelease \
+            "-PreactNativeArchitectures=$RELEASE_ABIS" \
+            "-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g" \
+            --no-daemon --stacktrace
+
+      # The only step that sees the keystore and its passwords. It runs apksigner from the
+      # Android SDK and no code from the repository or node_modules. Secrets cannot be tested
+      # in `if:`, so the secret is mapped to an environment variable and tested in the shell.
+      # The key alias is not secret and comes from a repository variable: as a secret, its
+      # value ("similarity-game") would be masked out of every file name in the logs.
+      - name: Sign the APK
+        id: sign
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ vars.ANDROID_KEY_ALIAS || 'similarity-game' }}
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          test -f "$apk"
+          mkdir -p dist
+
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" ]]; then
+            # Keep the debug-key signature that Gradle applied.
+            signing=debugkey
+            name="similarity-game-$APP_VERSION-debugkey.apk"
+            cp "$apk" "dist/$name"
+            echo "::warning title=APK signed with the public debug key::No ANDROID_KEYSTORE_BASE64 secret is set. The APK installs, but anyone can sign an 'update' for it and a later properly signed build will not install over it. See README.md > Releases."
+          else
+            if [[ -z "$ANDROID_KEYSTORE_PASSWORD" ]]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 is set but ANDROID_KEYSTORE_PASSWORD is not. See README.md > Releases."
+              exit 1
+            fi
+            signing=release
+            name="similarity-game-$APP_VERSION.apk"
+            keystore="$RUNNER_TEMP/release.keystore"
+            trap 'rm -f "$keystore"' EXIT
+            ( umask 077; printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore" )
+            # The key password defaults to the keystore password.
+            export ANDROID_KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-$ANDROID_KEYSTORE_PASSWORD}"
+
+            # Newest installed build-tools (37.0.0 at the time of writing).
+            build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+            # Replaces the debug-key signature; Gradle has already zip-aligned the APK.
+            # No v4 signature: that would be a separate .idsig file that nobody downloads.
+            "$build_tools/apksigner" sign \
+              --ks "$keystore" \
+              --ks-key-alias "$ANDROID_KEY_ALIAS" \
+              --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+              --key-pass env:ANDROID_KEY_PASSWORD \
+              --v4-signing-enabled false \
+              --out "dist/$name" "$apk"
+            echo "Signed with the keystore from the repository secrets (alias $ANDROID_KEY_ALIAS)."
+          fi
+          {
+            echo "signing=$signing"
+            echo "apk_name=$name"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify the signature
+        env:
+          SIGNING: ${{ steps.sign.outputs.signing }}
+          APK_NAME: ${{ steps.sign.outputs.apk_name }}
+        run: |
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
+          "$build_tools/apksigner" verify --print-certs "dist/$APK_NAME" | tee "$RUNNER_TEMP/certs.txt"
+
+          # Guard against a debug-key APK under the properly-signed name, or the reverse.
+          if grep -q 'CN=Android Debug' "$RUNNER_TEMP/certs.txt"; then actual=debugkey; else actual=release; fi
+          if [[ "$actual" != "$SIGNING" ]]; then
+            echo "::error::Expected a '$SIGNING' signature but the APK carries a '$actual' one."
+            exit 1
+          fi
+          ls -l dist
+
+      # archive: false uploads the APK itself instead of a zip containing it; the artifact is
+      # then named after the file. This is what makes a run useful even if no release is made.
+      - name: Upload the APK as a workflow artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: dist/${{ steps.sign.outputs.apk_name }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------------------------
+  ios:
+    name: iOS IPA (unsigned)
+    needs: test
+    if: ${{ needs.test.outputs.skip != 'true' }}
+    # Pinned: Expo SDK 58 needs Xcode 26.4 or newer, which only the macOS 26 image has.
+    # Standard runner (3 cores, 7 GB RAM, 14 GB disk): free for public repositories.
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      # Read by app.config.js at prebuild time: CFBundleShortVersionString (numeric part of
+      # the version) and CFBundleVersion. Passing MARKETING_VERSION to xcodebuild would do
+      # nothing, because the generated Info.plist holds literal values.
+      APP_VERSION: ${{ needs.test.outputs.version }}
+      APP_BUILD_NUMBER: ${{ github.run_number }}
+      # react-native-executorch postinstall: iOS libraries and headers only.
+      RNET_TARGET: ios
+      # Preferred Xcode; the image default is used (with a warning) if it has been removed.
+      XCODE_VERSION: '26.6'
+      XCODE_MINIMUM: '26.4'
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Select Xcode
+        run: |
+          if [[ -d "/Applications/Xcode_$XCODE_VERSION.app" ]]; then
+            sudo xcode-select -s "/Applications/Xcode_$XCODE_VERSION.app"
+          else
+            echo "::warning::Xcode $XCODE_VERSION is no longer on this runner image; using the image default. Update XCODE_VERSION in release.yml."
+          fi
+          xcodebuild -version
+          actual="$(xcodebuild -version | awk 'NR==1 {print $2}')"
+          lowest="$(printf '%s\n%s\n' "$XCODE_MINIMUM" "$actual" | sort -V | head -n 1)"
+          if [[ "$lowest" != "$XCODE_MINIMUM" ]]; then
+            echo "::error::Xcode $actual is older than $XCODE_MINIMUM, the minimum for Expo SDK 58."
+            exit 1
+          fi
+          pod --version
+          ruby --version
+          node --version
+          npm --version
+          df -h /
+
+      # Download caches only. ios/Pods and DerivedData are NOT cached: ios/ is regenerated on
+      # every run, the ExecuTorch pod bakes absolute paths into linker flags, and the disk is small.
+      - name: Cache ExecuTorch libraries and the CocoaPods download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/react-native-executorch
+            ~/Library/Caches/CocoaPods
+          key: ios-deps-${{ hashFiles('package-lock.json') }}
+          restore-keys: ios-deps-
+
+      # No GITHUB_TOKEN in this step's environment on purpose (see the android job).
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check that install scripts ran
+        run: |
+          test -d node_modules/react-native-executorch/third-party/ios/ExecutorchLib.xcframework
+          test -d node_modules/react-native-executorch/third-party/ios/XnnpackBackend.xcframework
+          # The patch-package patch also touches react-native-tcp-socket's iOS sources.
+          npx patch-package --error-on-fail
+
+      # ios/ is not committed (Continuous Native Generation). --no-install: pod install is run
+      # as its own step so that its output and duration are visible separately.
+      - name: Generate the iOS project
+        run: npx expo prebuild --platform ios --no-install
+
+      # Needs the network: React Native's prebuilt frameworks come from Maven Central and
+      # some pods from the CocoaPods CDN. If a first run fails inside a precompiled Expo
+      # module, retry with EXPO_USE_PRECOMPILED_MODULES=0 on this step; if it fails inside
+      # the prebuilt React framework, add RCT_USE_PREBUILT_RNCORE=0 RCT_USE_RN_DEP=0 (slow).
+      - name: Install CocoaPods dependencies
+        working-directory: ios
+        run: pod install
+
+      # `archive` rather than `build`: Release configuration with stripping, at a predictable
+      # path. Signing is switched off for every target, including the pods' resource bundles,
+      # by build settings given on the command line. `-exportArchive` cannot be used (it
+      # needs a signing identity), so the IPA is assembled by hand in the next step.
+      - name: Build the app without code signing
+        run: |
+          workspace="$(find ios -maxdepth 1 -name '*.xcworkspace' | head -n 1)"
+          test -n "$workspace"
+          scheme="$(basename "$workspace" .xcworkspace)" # "SimilarityGame", not the display name
+          echo "Workspace: $workspace, scheme: $scheme"
+          # pipefail (bash default here) keeps xcodebuild's exit status through the pipe; tee
+          # keeps the full log because xcbeautify trims script-phase output.
+          xcodebuild archive \
+            -workspace "$workspace" \
+            -scheme "$scheme" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -archivePath "$RUNNER_TEMP/app.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            2>&1 | tee "$RUNNER_TEMP/xcodebuild.log" | xcbeautify --renderer github-actions
+
+      - name: Package the unsigned IPA
+        id: package
+        run: |
+          app="$(find "$RUNNER_TEMP/app.xcarchive/Products/Applications" -maxdepth 1 -name '*.app' | head -n 1)"
+          test -n "$app"
+          test -f "$app/Info.plist"
+          test -f "$app/main.jsbundle" # the JS bundle was embedded
+
+          /usr/libexec/PlistBuddy \
+            -c 'Print :CFBundleIdentifier' \
+            -c 'Print :CFBundleShortVersionString' \
+            -c 'Print :CFBundleVersion' \
+            -c 'Print :MinimumOSVersion' \
+            "$app/Info.plist"
+          ls "$app/Frameworks" || true
+
+          name="similarity-game-$APP_VERSION-unsigned.ipa"
+          stage="$RUNNER_TEMP/ipa"
+          rm -rf "$stage"
+          mkdir -p "$stage/Payload" "$GITHUB_WORKSPACE/dist"
+          cp -R "$app" "$stage/Payload/" # cp -R keeps the symlinks inside frameworks
+          find "$stage/Payload" -name .DS_Store -delete
+
+          # An IPA is a zip whose only top-level entry is Payload/. Plain zip, not ditto or
+          # Finder: those add __MACOSX entries. -y stores symlinks as symlinks.
+          ( cd "$stage" && zip -r -y -X -q "$GITHUB_WORKSPACE/dist/$name" Payload )
+          # (grep reads to the end of its input; `grep -q` would close the pipe early and
+          # turn a match into a SIGPIPE failure of unzip under pipefail.)
+          if unzip -l "$GITHUB_WORKSPACE/dist/$name" | grep __MACOSX > /dev/null; then
+            echo "::error::The IPA contains __MACOSX entries."
+            exit 1
+          fi
+          ls -l "$GITHUB_WORKSPACE/dist"
+          echo "ipa_name=$name" >> "$GITHUB_OUTPUT" # step output, used by the upload below
+
+      - name: Upload the IPA as a workflow artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: dist/${{ steps.package.outputs.ipa_name }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload the full xcodebuild log on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ios-xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    needs: [test, android, ios]
+    # Runs when at least one platform was built (see "Failure policy" at the top). Without
+    # `!cancelled()` a failed build job would skip this job automatically.
+    if: ${{ !cancelled() && needs.test.result == 'success' && (needs.android.result == 'success' || needs.ios.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release (and, for a manual run, its tag) and upload files
+    env:
+      VERSION: ${{ needs.test.outputs.version }}
+      TAG: ${{ needs.test.outputs.tag }}
+      DRAFT: ${{ needs.test.outputs.draft }}
+      PRERELEASE: ${{ needs.test.outputs.prerelease }}
+      ANDROID_RESULT: ${{ needs.android.result }}
+      IOS_RESULT: ${{ needs.ios.result }}
+      APK_SIGNING: ${{ needs.android.outputs.signing }}
+      # The names the build jobs give their files (and so their artifacts). Worked out here
+      # instead of passed as job outputs, which the runner drops when they contain the value
+      # of any secret.
+      APK_NAME: similarity-game-${{ needs.test.outputs.version }}${{ needs.android.outputs.signing != 'release' && '-debugkey' || '' }}.apk
+      IPA_NAME: similarity-game-${{ needs.test.outputs.version }}-unsigned.ipa
+    steps:
+      # No checkout: this job runs no code from the repository, only the gh CLI that is
+      # preinstalled on the runner.
+      - name: Download the APK
+        if: ${{ needs.android.result == 'success' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ env.APK_NAME }}
+          path: dist
+
+      - name: Download the IPA
+        if: ${{ needs.ios.result == 'success' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ env.IPA_NAME }}
+          path: dist
+
+      - name: Write checksums and release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # (shellcheck SC2016 is silenced twice below: the backticks in those printf formats are Markdown.)
+          cd dist
+          ls -l
+          if [[ "$ANDROID_RESULT" == success ]]; then test -f "$APK_NAME"; fi
+          if [[ "$IOS_RESULT" == success ]]; then test -f "$IPA_NAME"; fi
+          sha256sum -- similarity-game-* > SHA256SUMS
+          cat SHA256SUMS
+
+          notes="$RUNNER_TEMP/notes.md"
+          : > "$notes"
+
+          if [[ "$ANDROID_RESULT" != success ]]; then
+            printf '> [!WARNING]\n> The Android build failed for this release, so there is no APK here (yet).\n\n' >> "$notes"
+          fi
+          if [[ "$IOS_RESULT" != success ]]; then
+            printf '> [!WARNING]\n> The iOS build failed for this release, so there is no IPA here (yet).\n\n' >> "$notes"
+          fi
+
+          echo '## Install' >> "$notes"
+          echo >> "$notes"
+
+          if [[ "$ANDROID_RESULT" == success ]]; then
+            # shellcheck disable=SC2016
+            printf '**Android** (8.0 or later, arm64): download `%s` on the phone, open it and allow your browser or file manager to install apps when asked.\n\n' "$APK_NAME" >> "$notes"
+            if [[ "$APK_SIGNING" != release ]]; then
+              cat >> "$notes" <<'EOF'
+          > [!WARNING]
+          > This APK is signed with the public Android **debug key**, because no release keystore is configured for this repository. It installs normally, but it does not prove who built it, and a later release signed with a real key will not install over it: you will have to uninstall first.
+
+          EOF
+            fi
+          fi
+
+          if [[ "$IOS_RESULT" == success ]]; then
+            # shellcheck disable=SC2016
+            printf '**iPhone / iPad** (iOS 17.0 or later): `%s` is **unsigned** and cannot be installed as it is.' "$IPA_NAME" >> "$notes"
+            cat >> "$notes" <<'EOF'
+           Sign it with your own Apple ID using [AltStore](https://altstore.io), [SideStore](https://sidestore.io) or [Sideloadly](https://sideloadly.io). With a free Apple ID the app stops opening after 7 days until it is refreshed with the same tool, and at most 3 sideloaded apps can be active on a device.
+
+          EOF
+          fi
+
+          cat >> "$notes" <<'EOF'
+          `SHA256SUMS` lists the SHA-256 checksum of each file. More detail: the Releases section of the README.
+
+          EOF
+
+          # GitHub's generated notes ("What's Changed", contributors, compare link). The same
+          # API that `gh release create --generate-notes` uses, called directly so that the
+          # text can also be refreshed when an existing release is updated.
+          if generated="$(gh api --method POST "repos/$GH_REPO/releases/generate-notes" \
+                -f tag_name="$TAG" -f target_commitish="$GITHUB_SHA" --jq .body)"; then
+            printf '%s\n' "$generated" >> "$notes"
+          else
+            echo "::warning::Could not generate release notes; the release will only have the install section."
+          fi
+          cat "$notes"
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          notes="$RUNNER_TEMP/notes.md"
+          files=(dist/similarity-game-* dist/SHA256SUMS)
+
+          if gh release view "$TAG" --json isDraft > /dev/null 2>&1; then
+            # The release exists: a re-run after a partial failure, an earlier manual run for
+            # the same version, or a release created by hand. (If the repository uses
+            # immutable releases this fails once the release is published: delete the
+            # release and re-run.)
+            echo "Updating the existing release $TAG"
+
+            # A draft has no tag yet; publishing creates it at the draft's target. Point that
+            # at the commit these files were built from, or an earlier run's commit is tagged.
+            existing="$(gh release view "$TAG" --json isDraft,targetCommitish --jq '"\(.isDraft) \(.targetCommitish)"')"
+            read -r existing_draft existing_target <<< "$existing"
+            if [[ "$existing_draft" == true && "$existing_target" != "$GITHUB_SHA" ]]; then
+              echo "Moving the draft's target from $existing_target to $GITHUB_SHA"
+              gh release edit "$TAG" --target "$GITHUB_SHA"
+            fi
+
+            gh release upload "$TAG" "${files[@]}" --clobber
+
+            # Remove this workflow's files from an earlier run that this run did not produce
+            # (e.g. a -debugkey APK after a keystore was added): they are no longer in
+            # SHA256SUMS or the notes. After "Re-run failed jobs" the platform that had
+            # succeeded is in dist/ again (its artifact is downloaded above), so it is kept.
+            existing_assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+            while IFS= read -r asset; do
+              if [[ "$asset" == similarity-game-* && ! -e "dist/$asset" ]]; then
+                echo "Removing the stale file $asset"
+                gh release delete-asset "$TAG" "$asset" --yes
+              fi
+            done <<< "$existing_assets"
+
+            gh release edit "$TAG" --notes-file "$notes" --prerelease="$PRERELEASE"
+          else
+            # Always created as a draft with every file attached, then published in a second
+            # step, so that nobody ever sees a published release without its files.
+            args=(--draft --title "Similarity Game $VERSION" --notes-file "$notes")
+            if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+              args+=(--verify-tag) # the pushed tag must exist; never create one
+            else
+              args+=(--target "$GITHUB_SHA") # manual run: the tag is created at this commit on publish
+            fi
+            if [[ "$PRERELEASE" == true ]]; then args+=(--prerelease); fi
+            gh release create "$TAG" "${files[@]}" "${args[@]}"
+          fi
+
+          if [[ "$DRAFT" != true ]]; then
+            gh release edit "$TAG" --draft=false
+          fi
+
+          url="$(gh release view "$TAG" --json url --jq .url)"
+          is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+          {
+            echo "### Release $TAG"
+            echo
+            echo "$url"
+            if [[ "$is_draft" == true ]]; then echo; echo "This is a **draft**: publish it from the Releases page."; fi
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Deliberately last: the other platform has been released by now, and this turns the
+      # job (and the run) red so that the missing platform cannot go unnoticed.
+      - name: Fail if a platform is missing
+        if: ${{ needs.android.result != 'success' || needs.ios.result != 'success' }}
+        run: |
+          echo "::error title=Incomplete release::android=$ANDROID_RESULT ios=$IOS_RESULT. The release $TAG was created without the failed platform. Fix the problem and use 'Re-run failed jobs' to add the missing file."
+          exit 1

@@ -1,0 +1,54 @@
+# Type-check and unit tests on every push to main and every pull request.
+# No native build happens here; see release.yml for the Android and iOS builds.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: the job only needs to read the repository.
+permissions:
+  contents: read
+
+# A newer push to the same branch or pull request replaces the run in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Type-check and tests
+    # Pinned rather than ubuntu-latest so an image change cannot silently alter the toolchain.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      # react-native-executorch's postinstall downloads about 30 MB of native libraries from
+      # GitHub Releases and fails `npm ci` if that download fails. tsc and jest never load
+      # them, so skip the download here (the script still writes its build config file).
+      RNET_SKIP_DOWNLOAD: '1'
+    steps:
+      # Actions are pinned to a full commit SHA (the tag is in the comment); Dependabot
+      # (.github/dependabot.yml) proposes updates.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          # Node 24 bundles npm 11, the version that wrote package-lock.json.
+          node-version: 24
+          # Must be explicit: package.json has no "packageManager" field for setup-node to detect.
+          cache: npm
+
+      # Do not add --ignore-scripts: the root postinstall (patch-package) must run.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npx jest --ci

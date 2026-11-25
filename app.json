@@ -1,0 +1,47 @@
+{
+  "expo": {
+    "name": "Similarity Game",
+    "slug": "similarity-game",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.astevenstaylor.similaritygame",
+      "deploymentTarget": "17.0",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Find and join games hosted by other phones on this Wi-Fi network.",
+        "NSBonjourServices": [
+          "_simgame._tcp"
+        ]
+      }
+    },
+    "android": {
+      "package": "com.astevenstaylor.similaritygame",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26,
+            "buildArchs": [
+              "arm64-v8a",
+              "x86_64"
+            ],
+            "extraProguardRules": "# react-native-zeroconf ships no R8 rules; its embedded mDNSResponder (ImplType.DNSSD)\n# looks these classes, fields and methods up by name from JNI.\n-keep class com.github.druk.dnssd.** { *; }"
+          }
+        }
+      ],
+      "expo-asset"
+    ]
+  }
+}

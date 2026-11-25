@@ -1,0 +1,182 @@
+diff --git a/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketModule.java b/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketModule.java
+index 121edb4..055fddc 100644
+--- a/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketModule.java
++++ b/node_modules/react-native-tcp-socket/android/src/main/java/com/asterinet/react/tcpsocket/TcpSocketModule.java
+@@ -128,7 +128,12 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+     @SuppressWarnings("unused")
+     @ReactMethod
+     public void write(final int cId, @NonNull final String base64String, final int msgId) {
+-        TcpSocketClient socketClient = getTcpClient(cId);
++        TcpSocketClient socketClient = findTcpClient(cId);
++        if (socketClient == null) {
++            // Socket is gone (or not registered yet): report instead of throwing on the JS call thread.
++            tcpEvtListener.onWritten(cId, msgId, new IOException("Socket " + cId + " is closed"));
++            return;
++        }
+         byte[] data = Base64.decode(base64String, Base64.NO_WRAP);
+         socketClient.write(msgId, data);
+     }
+@@ -140,7 +145,8 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+         executorService.execute(new Runnable() {
+             @Override
+             public void run() {
+-                TcpSocketClient socketClient = getTcpClient(cId);
++                TcpSocketClient socketClient = findTcpClient(cId);
++                if (socketClient == null) return;
+                 socketClient.destroy();
+             }
+         });
+@@ -158,7 +164,9 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+         executorService.execute(new Runnable() {
+             @Override
+             public void run() {
+-                TcpSocketServer socketServer = getTcpServer(cId);
++                TcpSocket socket = socketMap.get(cId);
++                if (!(socket instanceof TcpSocketServer)) return;
++                TcpSocketServer socketServer = (TcpSocketServer) socket;
+                 socketServer.close();
+                 socketMap.remove(cId);
+             }
+@@ -186,7 +194,8 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+     @SuppressWarnings("unused")
+     @ReactMethod
+     public void setNoDelay(@NonNull final Integer cId, final boolean noDelay) {
+-        final TcpSocketClient client = getTcpClient(cId);
++        final TcpSocketClient client = findTcpClient(cId);
++        if (client == null) return;
+         try {
+             client.setNoDelay(noDelay);
+         } catch (IOException e) {
+@@ -197,7 +206,8 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+     @SuppressWarnings("unused")
+     @ReactMethod
+     public void setKeepAlive(@NonNull final Integer cId, final boolean enable, final int initialDelay) {
+-        final TcpSocketClient client = getTcpClient(cId);
++        final TcpSocketClient client = findTcpClient(cId);
++        if (client == null) return;
+         try {
+             client.setKeepAlive(enable, initialDelay);
+         } catch (IOException e) {
+@@ -208,14 +218,16 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+     @SuppressWarnings("unused")
+     @ReactMethod
+     public void pause(final int cId) {
+-        TcpSocketClient client = getTcpClient(cId);
++        TcpSocketClient client = findTcpClient(cId);
++        if (client == null) return;
+         client.pause();
+     }
+ 
+     @SuppressWarnings("unused")
+     @ReactMethod
+     public void resume(final int cId) {
+-        TcpSocketClient client = getTcpClient(cId);
++        TcpSocketClient client = findTcpClient(cId);
++        if (client == null) return;
+         client.resume();
+     }
+ 
+@@ -293,7 +305,8 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+                             // Single network scenario --> // Use that network in any case
+                             Network network = wifiNetworks.get(0);
+                             currentNetwork.setNetwork(network);
+-                            cm.bindProcessToNetwork(network);
++                            // No cm.bindProcessToNetwork(...) here or below: it pins the WHOLE process to this network for good.
++                            // TcpSocketClient.connect() binds just this socket (network.bindSocket), which is all that is needed.
+                             networkFound = true;
+                         } else {
+                             // Multiple network scenario
+@@ -312,7 +325,6 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+                                         if (foundAddress != null && foundAddress.contains(iotDeviceHost)) {
+                                             // found ioT device network
+                                             currentNetwork.setNetwork(network);
+-                                            cm.bindProcessToNetwork(network);
+                                             networkFound = true;
+                                             break;
+                                         }
+@@ -326,7 +338,6 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+                                             if (address.getAddress().getHostAddress().startsWith(iotSubnetAddress)) {
+                                                 // Found IoT device network
+                                                 currentNetwork.setNetwork(network);
+-                                                cm.bindProcessToNetwork(network);
+                                                 networkFound = true;
+                                                 break;
+                                             }
+@@ -343,7 +354,6 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+                                             if(address.getAddress().getHostAddress().startsWith(iotSubnetAddress)) {
+                                                 // found ioT device network
+                                                 currentNetwork.setNetwork(network);
+-                                                cm.bindProcessToNetwork(network);
+                                                 networkFound = true;
+                                                 break;
+                                             }
+@@ -371,7 +381,6 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+                                                 if (matchedNetwork != null) {
+                                                     // Found IoT device network
+                                                     currentNetwork.setNetwork(matchedNetwork);
+-                                                    cm.bindProcessToNetwork(matchedNetwork);
+                                                     networkFound = true;
+                                                     break;
+                                                 }
+@@ -384,7 +393,6 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+                                 if (!networkFound && wifiNetworks.size() > 1) {
+                                     Network fallbackNetwork = wifiNetworks.get(wifiNetworks.size() - 1); // Get last network from the list
+                                     currentNetwork.setNetwork(fallbackNetwork);
+-                                    cm.bindProcessToNetwork(fallbackNetwork);
+                                 }
+                             }
+                         }
+@@ -393,7 +401,6 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+                         if (!networkFound && wifiNetworks.size() > 1) {
+                             Network fallbackNetwork = wifiNetworks.get(wifiNetworks.size() - 1); // Get last network from the list
+                             currentNetwork.setNetwork(fallbackNetwork);
+-                            cm.bindProcessToNetwork(fallbackNetwork);
+                         }
+                     }
+ 
+@@ -450,6 +457,13 @@ public class TcpSocketModule extends ReactContextBaseJavaModule {
+             mNetworkMap.put(iface + ipAddress, currentNetwork.getNetwork());
+     }
+ 
++    /** Non-throwing lookup for the void @ReactMethods, which have no promise to reject. */
++    @Nullable
++    private TcpSocketClient findTcpClient(final int id) {
++        TcpSocket socket = socketMap.get(id);
++        return socket instanceof TcpSocketClient ? (TcpSocketClient) socket : null;
++    }
++
+     private TcpSocketClient getTcpClient(final int id) {
+         TcpSocket socket = socketMap.get(id);
+         if (socket == null) {
+diff --git a/node_modules/react-native-tcp-socket/ios/TcpSockets.m b/node_modules/react-native-tcp-socket/ios/TcpSockets.m
+index a5553c6..0582027 100644
+--- a/node_modules/react-native-tcp-socket/ios/TcpSockets.m
++++ b/node_modules/react-native-tcp-socket/ios/TcpSockets.m
+@@ -286,6 +286,14 @@ RCT_EXPORT_METHOD(getCertificate:(nonnull NSNumber *)cId
+                   toClient:(NSNumber *)clientID
+             connectionType:(NSString *)connectionType {
+     GCDAsyncSocket *socket = [client getSocket];
++    NSString *localAddress = [socket localHost];
++    NSString *remoteAddress = [socket connectedHost];
++    if (localAddress == nil || remoteAddress == nil) {
++        // Peer reset before the accept was reported: nil would crash the dictionary literal below.
++        RCTLogWarn(@"Dropping incoming connection %@: peer disconnected before it was accepted", client.id);
++        [self destroyClient:client.id];
++        return;
++    }
+ 
+     [self sendEventWithName:connectionType
+                        body:@{
+@@ -293,10 +301,10 @@ RCT_EXPORT_METHOD(getCertificate:(nonnull NSNumber *)cId
+                            @"info" : @{
+                                @"id" : client.id,
+                                @"connection" : @{
+-                                   @"localAddress" : [socket localHost],
++                                   @"localAddress" : localAddress,
+                                    @"localPort" : [NSNumber
+                                        numberWithInt:[socket localPort]],
+-                                   @"remoteAddress" : [socket connectedHost],
++                                   @"remoteAddress" : remoteAddress,
+                                    @"remotePort" : [NSNumber
+                                        numberWithInt:[socket connectedPort]],
+                                    @"remoteFamily" : [socket isIPv4] ? @"IPv4"
