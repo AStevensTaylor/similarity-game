@@ -37,7 +37,7 @@
     "@types/react": "~19.3.0",
     "jest": "~30.5.2",
     "jest-expo": "~58.0.15",
-    "onnxruntime-node": "^1.24.3",
+    "onnxruntime-node": "^1.31.1",
     "patch-package": "8.0.1",
     "typescript": "~6.0.3"
   },
