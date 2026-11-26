@@ -12,7 +12,7 @@ const NAMES = ['Ana', 'Bo', 'Cy'];
 const SEED = 1234;
 
 function settings(overrides: Partial<GameSettings> = {}): GameSettings {
-  return { turnsPerPlayer: 1, threshold: 0.95, guessMode: 'open', requireDictionaryNoun: false, ...overrides };
+  return { turnsPerPlayer: 1, threshold: 0.95, guessMode: 'open', requireDictionaryNoun: false, useWordLinks: true, ...overrides };
 }
 
 async function renderGame(s: GameSettings, names = NAMES, embedder = createTestEmbedder()) {

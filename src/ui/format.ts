@@ -1,4 +1,5 @@
 /** Pure display helpers. No React, no React Native. */
+import type { LinkSource, WordLink } from '../game';
 
 /**
  * Calibrated score with 3 decimals, truncated (never rounded up) so a score
@@ -15,6 +16,41 @@ export function formatRaw(raw: number): string {
   if (!Number.isFinite(raw)) return '-';
   const rounded = Math.round(raw * 1000) / 1000;
   return (Object.is(rounded, -0) ? 0 : rounded).toFixed(3);
+}
+
+const SOURCE_NAMES: Record<LinkSource, string> = { wordnet: 'WordNet', conceptnet: 'ConceptNet' };
+
+/** The dictionaries a link comes from, e.g. "WordNet and ConceptNet". */
+export function formatLinkSources(link: WordLink): string {
+  return link.sources.map((s) => SOURCE_NAMES[s]).join(' and ');
+}
+
+/** A word link as a short sentence, e.g. `"root" is part of "tree"`. */
+export function describeLink(link: WordLink): string {
+  const f = `"${link.from}"`;
+  const t = `"${link.to}"`;
+  switch (link.relation) {
+    case 'synonym':
+      return `${f} means about the same as ${t}`;
+    case 'opposite':
+      return `${f} is the opposite of ${t}`;
+    case 'kind':
+      return `${f} is a kind of ${t}`;
+    case 'part':
+      return `${f} is part of ${t}`;
+    case 'member':
+      return `${f} is a member of ${t}`;
+    case 'material':
+      return `${f} is made of ${t}`;
+    case 'used-for':
+      return `${f} is used for ${t}`;
+    case 'cause':
+      return `${f} causes ${t}`;
+    case 'found-at':
+      return `${f} is found at ${t}`;
+    case 'associated':
+      return `${f} and ${t} go together`;
+  }
 }
 
 /** Threshold with 2 decimals, e.g. 0.95. */

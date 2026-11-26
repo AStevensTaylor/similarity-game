@@ -32,7 +32,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
 
-const CUSTOM: GameSettings = { turnsPerPlayer: 4, threshold: 0.88, guessMode: 'list', requireDictionaryNoun: false };
+const CUSTOM: GameSettings = { turnsPerPlayer: 4, threshold: 0.88, guessMode: 'list', requireDictionaryNoun: false, useWordLinks: false };
 
 describe('settings serialisation', () => {
   it('round-trips', () => {
@@ -59,6 +59,10 @@ describe('settings serialisation', () => {
     });
     expect(parseSettings(JSON.stringify({ threshold: 0.951234, turnsPerPlayer: 2.4 })).threshold).toBe(0.95);
     expect(parseSettings(JSON.stringify({ requireDictionaryNoun: 'no' })).requireDictionaryNoun).toBe(true);
+    // Settings saved before word links existed get them switched on; a stored choice is kept.
+    expect(parseSettings(JSON.stringify({ threshold: 0.9 })).useWordLinks).toBe(true);
+    expect(parseSettings(JSON.stringify({ useWordLinks: false })).useWordLinks).toBe(false);
+    expect(parseSettings(JSON.stringify({ useWordLinks: 'off' })).useWordLinks).toBe(true);
   });
 
   it('serialises only the known fields, sanitised', () => {

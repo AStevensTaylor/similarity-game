@@ -11,6 +11,7 @@
     "test": "jest",
     "calibrate": "node tools/calibrate.mjs",
     "fetch-model": "node tools/fetch-model.mjs",
+    "build-links": "node tools/build-links.mjs",
     "postinstall": "patch-package"
   },
   "dependencies": {

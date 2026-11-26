@@ -11,6 +11,8 @@
  * client message carries "who I am".
  */
 import {
+  copyLink,
+  isWordLink,
   MAX_PLAYERS,
   MAX_THRESHOLD,
   MAX_TURNS_PER_PLAYER,
@@ -19,10 +21,11 @@ import {
   MIN_TURNS_PER_PLAYER,
   OPTIONS_PER_TURN,
 } from '../game';
-import type { ClueAttempt, ClueRejectReason, GameSettings, Guess, RoundRecord, TurnSummary } from '../game';
+import type { ClueAttempt, ClueRejectReason, GameSettings, Guess, RoundRecord, TurnSummary, WordLink } from '../game';
 import type { GameView, GiverView, GuessStatus, HostControls, NetPhase, PlayerView, ViewPlayer } from './view';
 
-export const PROTOCOL_VERSION = 1;
+/** 2: word links (settings.useWordLinks, ClueAttempt.link / RoundRecord.link, ClueResult.link). */
+export const PROTOCOL_VERSION = 2;
 /** Maximum size of one serialised message (one line), in bytes. */
 export const MAX_LINE_BYTES = 64 * 1024;
 /** mDNS/Bonjour service type (i.e. _simgame._tcp). */
@@ -90,7 +93,8 @@ export type ClueResult =
   /** Another clue of yours is still being scored; this one was dropped. */
   | { kind: 'busy' }
   | { kind: 'rejected'; clue: string; score: number; raw: number }
-  | { kind: 'accepted'; clue: string; score: number; raw: number };
+  /** `link`: set when the clue passed below the threshold because of this dictionary link. */
+  | { kind: 'accepted'; clue: string; score: number; raw: number; link?: WordLink };
 
 export type HostMessage =
   | { v: number; t: 'welcome'; seat: number; name: string }
@@ -395,9 +399,18 @@ function oneOf<T extends string>(x: unknown, values: readonly T[]): x is T {
   return typeof x === 'string' && (values as readonly string[]).includes(x);
 }
 
+/** An optional WordLink field: absent is fine, present must be valid. Returns false when invalid. */
+function parseOptionalLink(x: unknown): WordLink | undefined | false {
+  if (x === undefined) return undefined;
+  if (!isWordLink(x) || !isStr(x.from, MAX_WORD_INPUT_LENGTH) || !isStr(x.to, MAX_WORD_INPUT_LENGTH)) return false;
+  return copyLink(x);
+}
+
 function parseClueAttempt(x: unknown): ClueAttempt | null {
   if (!isObj(x) || !isStr(x.clue, MAX_WORD_INPUT_LENGTH) || !isNum(x.score, -1, 1)) return null;
-  return { clue: x.clue, score: x.score };
+  const link = parseOptionalLink(x.link);
+  if (link === false) return null;
+  return link ? { clue: x.clue, score: x.score, link } : { clue: x.clue, score: x.score };
 }
 
 function parseGuess(x: unknown): Guess | null {
@@ -422,10 +435,13 @@ function parseRound(x: unknown): RoundRecord | null {
   ) {
     return null;
   }
+  const link = parseOptionalLink(x.link);
+  if (link === false) return null;
   return {
     round: x.round,
     clue: x.clue,
     score: x.score,
+    ...(link ? { link } : {}),
     guesses,
     anyCorrect: x.anyCorrect,
     correctGuesserIds,
@@ -465,7 +481,8 @@ function parseSettings(x: unknown): GameSettings | null {
     !isInt(x.turnsPerPlayer, MIN_TURNS_PER_PLAYER, MAX_TURNS_PER_PLAYER) ||
     !isNum(x.threshold, MIN_THRESHOLD, MAX_THRESHOLD) ||
     !oneOf(x.guessMode, ['open', 'list'] as const) ||
-    !isBool(x.requireDictionaryNoun)
+    !isBool(x.requireDictionaryNoun) ||
+    !isBool(x.useWordLinks)
   ) {
     return null;
   }
@@ -474,6 +491,7 @@ function parseSettings(x: unknown): GameSettings | null {
     threshold: x.threshold,
     guessMode: x.guessMode,
     requireDictionaryNoun: x.requireDictionaryNoun,
+    useWordLinks: x.useWordLinks,
   };
 }
 
@@ -654,7 +672,14 @@ function parseClueResult(x: unknown): ClueResult | null {
     case 'rejected':
     case 'accepted':
       if (!isStr(x.clue, MAX_WORD_INPUT_LENGTH, 1) || !isNum(x.score, -1, 1) || !isNum(x.raw, -1.0001, 1.0001)) return null;
-      return { kind: x.kind, clue: x.clue, score: x.score, raw: x.raw };
+      if (x.kind === 'rejected') return { kind: x.kind, clue: x.clue, score: x.score, raw: x.raw };
+      {
+        const link = parseOptionalLink(x.link);
+        if (link === false) return null;
+        return link
+          ? { kind: x.kind, clue: x.clue, score: x.score, raw: x.raw, link }
+          : { kind: x.kind, clue: x.clue, score: x.score, raw: x.raw };
+      }
     default:
       return null;
   }

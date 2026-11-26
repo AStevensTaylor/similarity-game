@@ -148,7 +148,9 @@ export function LobbyScreen({ snapshot, view, client, hostSnapshot, modelNotice,
         <AppText variant="caption">
           {`${pluralize(settings.turnsPerPlayer, 'turn')} as clue-giver each - clue threshold ${formatThreshold(settings.threshold)} - ${
             settings.guessMode === 'list' ? 'guessers pick from the five words' : 'guessers type any word'
-          }${settings.requireDictionaryNoun ? '' : ' - clues need not be dictionary nouns'}. ${
+          }${settings.requireDictionaryNoun ? '' : ' - clues need not be dictionary nouns'}${
+            settings.useWordLinks ? '' : ' - linked words not accepted'
+          }. ${
             isHost ? 'These are your settings; change them in Settings before opening a lobby.' : "These are the host's settings."
           }`}
         </AppText>

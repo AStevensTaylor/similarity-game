@@ -5,7 +5,7 @@ import type { SimilarityResult } from '../../similarity';
 import { attemptClue } from '../game/clueAttempt';
 
 const DECK = ['river', 'candle', 'garden', 'pencil', 'window', 'bottle', 'ladder', 'mirror', 'pocket', 'saddle'];
-const SETTINGS = { turnsPerPlayer: 1, threshold: 0.95, guessMode: 'open', requireDictionaryNoun: true } as const;
+const SETTINGS = { turnsPerPlayer: 1, threshold: 0.95, guessMode: 'open', requireDictionaryNoun: true, useWordLinks: true } as const;
 
 function clueState(): GameState {
   let state = createGame(['Ana', 'Bo'], SETTINGS, DECK, 7);
@@ -97,5 +97,39 @@ describe('attemptClue', () => {
     const d = deps({ raw: 1, score: 1 });
     expect((await attemptClue('stream', state, d)).kind).toBe('error');
     expect(d.similarity).not.toHaveBeenCalled();
+  });
+});
+
+describe('attemptClue with word links', () => {
+  const linkFor = (state: GameState) => ({ relation: 'part' as const, from: 'stream', to: state.hiddenWord!, sources: ['wordnet' as const] });
+
+  it('accepts a linked clue below the threshold and passes the link to the engine', async () => {
+    const state = clueState();
+    const link = linkFor(state);
+    const result = await attemptClue('stream', state, deps({ raw: 0.4, score: 0.745, link }));
+    expect(result).toEqual({
+      kind: 'scored',
+      accepted: true,
+      clue: 'stream',
+      score: 0.745,
+      raw: 0.4,
+      link,
+      action: { type: 'CLUE_ACCEPTED', clue: 'stream', score: 0.745, link },
+    });
+    if (result.kind !== 'scored') throw new Error('unreachable');
+    expect(gameReducer(state, result.action, DECK).acceptedClues).toEqual([{ clue: 'stream', score: 0.745, link }]);
+  });
+
+  it('rejects it when word links are off', async () => {
+    const base = clueState();
+    const state: GameState = { ...base, settings: { ...base.settings, useWordLinks: false } };
+    const result = await attemptClue('stream', state, deps({ raw: 0.4, score: 0.745, link: linkFor(state) }));
+    expect(result.kind === 'scored' && result.action).toEqual({ type: 'CLUE_REJECTED', clue: 'stream', score: 0.745 });
+  });
+
+  it('does not attach a link to a clue that reaches the threshold anyway', async () => {
+    const state = clueState();
+    const result = await attemptClue('stream', state, deps({ raw: 0.6, score: 0.96, link: linkFor(state) }));
+    expect(result.kind === 'scored' && result.action).toEqual({ type: 'CLUE_ACCEPTED', clue: 'stream', score: 0.96 });
   });
 });

@@ -22,7 +22,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 const SEED = 1234;
 
 function settings(overrides: Partial<GameSettings> = {}): GameSettings {
-  return { turnsPerPlayer: 1, threshold: 0.95, guessMode: 'open', requireDictionaryNoun: false, ...overrides };
+  return { turnsPerPlayer: 1, threshold: 0.95, guessMode: 'open', requireDictionaryNoun: false, useWordLinks: true, ...overrides };
 }
 
 function deferred<T>() {
@@ -366,7 +366,7 @@ describe('SettingsProvider', () => {
     latest = useSettings();
     return null;
   }
-  const stored = { threshold: 0.85, guessMode: 'list', turnsPerPlayer: 4, requireDictionaryNoun: false };
+  const stored = { threshold: 0.85, guessMode: 'list', turnsPerPlayer: 4, requireDictionaryNoun: false, useWordLinks: false };
 
   it('re-applies a change made before the stored settings arrive, without losing the other stored values', async () => {
     await AsyncStorage.clear();

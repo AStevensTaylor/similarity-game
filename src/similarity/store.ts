@@ -1,5 +1,5 @@
 import { createSimilarityService } from './service';
-import type { Embedder, SimilarityResult, SimilarityService } from './types';
+import type { Embedder, FindLink, SimilarityResult, SimilarityService } from './types';
 
 export type SimilarityStatus = 'loading' | 'ready' | 'error';
 
@@ -34,8 +34,9 @@ function describe(error: unknown): string {
  */
 export function createSimilarityStore(
   embedder: Embedder & { load?: () => Promise<void> },
+  options: { findLink?: FindLink | null } = {},
 ): SimilarityStore {
-  const service = createSimilarityService(embedder);
+  const service = createSimilarityService(embedder, { findLink: options.findLink ?? null });
   const listeners = new Set<() => void>();
   let snapshot: SimilaritySnapshot = { status: 'loading' };
   let loading: Promise<void> | null = null;

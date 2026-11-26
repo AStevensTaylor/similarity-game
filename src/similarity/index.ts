@@ -3,10 +3,11 @@
 // createExecutorchEmbedder is deliberately NOT re-exported here: importing
 // './executorchEmbedder' loads the native ExecuTorch module. SimilarityProvider
 // requires it lazily; import it from that file directly if you need it.
-export type { Embedder, LoadableEmbedder, SimilarityResult, SimilarityService } from './types';
+export type { Embedder, FindLink, LoadableEmbedder, SimilarityResult, SimilarityService } from './types';
 export {
   RAW_GATE,
   SCORE_GATE,
+  LINK_RAW_FLOOR,
   GOLDEN_PAIRS,
   CALIBRATION_INFO,
   calibrate,

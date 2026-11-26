@@ -9,7 +9,8 @@ import {
 } from 'react';
 
 import { createSimilarityStore, type SimilarityStatus, type SimilarityStore } from './store';
-import type { Embedder, SimilarityResult } from './types';
+import { findLink as bundledFindLink } from '../data/links';
+import type { Embedder, FindLink, SimilarityResult } from './types';
 
 export interface SimilarityContextValue {
   status: SimilarityStatus;
@@ -34,11 +35,17 @@ export interface SimilarityProviderProps {
   children: ReactNode;
   /** Override the on-device model, e.g. with a fake in tests or storybook-style screens. */
   embedder?: Embedder & { load?: () => Promise<void> };
+  /** Dictionary link lookup; defaults to the bundled WordNet / ConceptNet table. Pass null to disable. */
+  findLink?: FindLink | null;
 }
 
 /** Owns the similarity model for the whole app and starts loading it on mount. */
-export function SimilarityProvider({ children, embedder }: SimilarityProviderProps) {
-  const [store] = useState(() => createSimilarityStore(embedder ?? createDefaultEmbedder()));
+export function SimilarityProvider({ children, embedder, findLink }: SimilarityProviderProps) {
+  const [store] = useState(() =>
+    createSimilarityStore(embedder ?? createDefaultEmbedder(), {
+      findLink: findLink === undefined ? bundledFindLink : findLink,
+    }),
+  );
   useEffect(() => {
     store.load();
   }, [store]);

@@ -15,6 +15,11 @@ export interface GameSettings {
   guessMode: GuessMode;
   /** When true, a clue must be in the bundled noun dictionary. */
   requireDictionaryNoun: boolean;
+  /**
+   * When true, a clue below the threshold is still accepted if a dictionary
+   * (WordNet / ConceptNet) links it to the hidden word, e.g. "root" is part of "tree".
+   */
+  useWordLinks: boolean;
 }
 
 export const DEFAULT_SETTINGS: GameSettings = {
@@ -22,6 +27,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   threshold: 0.95,
   guessMode: 'open',
   requireDictionaryNoun: true,
+  useWordLinks: true,
 };
 
 /**
@@ -63,10 +69,41 @@ export interface Player {
   score: number;
 }
 
+export const LINK_RELATIONS = [
+  'synonym',
+  'opposite',
+  'kind',
+  'part',
+  'member',
+  'material',
+  'used-for',
+  'cause',
+  'found-at',
+  'associated',
+] as const;
+export type LinkRelation = (typeof LINK_RELATIONS)[number];
+
+export const LINK_SOURCES = ['wordnet', 'conceptnet'] as const;
+export type LinkSource = (typeof LINK_SOURCES)[number];
+
+/**
+ * A dictionary link between two words. Directed relations read
+ * "<from> <relation> <to>" ("root" is part of "tree"); for the symmetric ones
+ * (synonym, opposite, associated) the order carries no meaning.
+ */
+export interface WordLink {
+  relation: LinkRelation;
+  from: string;
+  to: string;
+  sources: LinkSource[];
+}
+
 /** A clue attempt together with its calibrated similarity score. */
 export interface ClueAttempt {
   clue: string;
   score: number;
+  /** Present when the clue was accepted below the threshold because of this dictionary link. */
+  link?: WordLink;
 }
 
 export interface Guess {
@@ -87,6 +124,8 @@ export interface RoundRecord {
   round: number;
   clue: string;
   score: number;
+  /** Present when the clue was accepted below the threshold because of this dictionary link. */
+  link?: WordLink;
   guesses: Guess[];
   anyCorrect: boolean;
   /** Ids of the guessers who were correct (each received +1). */
@@ -171,7 +210,11 @@ export type GameAction =
   | { type: 'REVEAL' }
   | { type: 'CHOOSE_WORD'; word: string }
   | { type: 'CLUE_REJECTED'; clue: string; score: number }
-  | { type: 'CLUE_ACCEPTED'; clue: string; score: number }
+  /**
+   * `link`: a dictionary link between the clue and the hidden word. With
+   * settings.useWordLinks on, it lets a clue below the threshold pass.
+   */
+  | { type: 'CLUE_ACCEPTED'; clue: string; score: number; link?: WordLink }
   | { type: 'FORFEIT_TURN' }
   | { type: 'SUBMIT_GUESS'; guess: string }
   /** Records a blank, wrong guess for the current guesser (both guess modes). Used by network play. */

@@ -1,5 +1,7 @@
 nouns.json and deck.json are derived from WordNet 3.1 (lemma inventory, noun/proper-noun classification, lexicographer categories, sense tag counts), filtered by commonness using SCOWL word lists (via npm wordlist-english 1.2.1) and, for the deck, cross-checked against dariusk/corpora lists (CC0).
 
+src/data/links.json is derived from WordNet 3.1 (synonym, hypernym, meronym, antonym and derivation pointers) and from ConceptNet 5.7 (https://conceptnet.io/, conceptnet-assertions-5.7.0.csv.gz), by tools/build-links.mjs. ConceptNet 5.7 is licensed under the Creative Commons Attribution-ShareAlike 4.0 International licence (https://creativecommons.org/licenses/by-sa/4.0/) and contains data from Open Mind Common Sense (crowd-sourced), the English, French and German Wiktionary (CC BY-SA), OpenCyc, and Verbosity (a word game by Luis von Ahn, Mihir Kedia and Manuel Blum). Citation: Robyn Speer, Joshua Chin, and Catherine Havasi. 2017. "ConceptNet 5.5: An Open Multilingual Graph of General Knowledge." In proceedings of AAAI 31. links.json, as an adaptation of ConceptNet, is distributed under CC BY-SA 4.0; changes made: only English noun-noun edges between the app's dictionary nouns were kept, scored, combined with WordNet links and reduced to one labelled relation per pair.
+
 ===== WordNet 3.1 license (from header of dict/data.noun) =====
 This software and database is being provided to you, the LICENSEE, by  
 Princeton University under the following license.  By obtaining, using  

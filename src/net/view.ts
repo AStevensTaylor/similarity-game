@@ -14,6 +14,7 @@
  *    which reveals the hidden word) are public.
  */
 import {
+  copyLink,
   FORFEIT_AFTER_REJECTIONS,
   GIVER_REWARDS,
   MAX_CLUE_ROUNDS,
@@ -172,13 +173,18 @@ export function netPhase(game: GameState): NetPhase {
   }
 }
 
-const copyClue = (c: ClueAttempt): ClueAttempt => ({ clue: c.clue, score: c.score });
+const copyClue = (c: ClueAttempt): ClueAttempt =>
+  c.link ? { clue: c.clue, score: c.score, link: copyLink(c.link) } : { clue: c.clue, score: c.score };
 
-function copyRound(r: RoundRecord): RoundRecord {
+/** A clue without its word link: the link names the hidden word, so guessers must not see it mid-turn. */
+const clueWithoutLink = (c: ClueAttempt): ClueAttempt => ({ clue: c.clue, score: c.score });
+
+function copyRound(r: RoundRecord, withLink = true): RoundRecord {
   return {
     round: r.round,
     clue: r.clue,
     score: r.score,
+    ...(r.link && withLink ? { link: copyLink(r.link) } : {}),
     guesses: r.guesses.map((g) => ({ ...g })),
     anyCorrect: r.anyCorrect,
     correctGuesserIds: r.correctGuesserIds.slice(),
@@ -253,6 +259,8 @@ function projectGame(state: SessionState, game: GameState, playerIndex: number, 
 
   const mine = phase === 'guess' && !isGiver ? state.pendingGuesses[me.id] : undefined;
   const awaitingContinue = phase === 'round-result' || phase === 'turn-result';
+  // A word link contains the hidden word: only the giver sees links before the word is revealed.
+  const showLinks = isGiver || phase === 'turn-result' || phase === 'game-over';
 
   return {
     step: state.step,
@@ -262,7 +270,7 @@ function projectGame(state: SessionState, game: GameState, playerIndex: number, 
     clueRound: game.clueRound,
     giverSeat: state.seats[game.giverIndex].seat,
     role: isGiver ? 'giver' : 'guesser',
-    acceptedClues: game.acceptedClues.map(copyClue),
+    acceptedClues: game.acceptedClues.map(showLinks ? copyClue : clueWithoutLink),
     guessOptions: listMode && !isGiver && phase !== 'game-over' ? game.guessOptions.slice() : null,
     guessStatus,
     yourGuess: typeof mine === 'string' ? mine : null,
@@ -279,7 +287,7 @@ function projectGame(state: SessionState, game: GameState, playerIndex: number, 
             scoring: state.scoring,
           }
         : null,
-    rounds: game.rounds.map(copyRound),
+    rounds: game.rounds.map((r) => copyRound(r, showLinks)),
     giverTurnPoints: game.giverTurnPoints,
     rewardIfRoundFails: GIVER_REWARDS[Math.min(game.clueRound, MAX_CLUE_ROUNDS) - 1],
     turnSummary:

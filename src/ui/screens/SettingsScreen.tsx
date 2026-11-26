@@ -9,7 +9,15 @@ import {
   MIN_TURNS_PER_PLAYER,
   type GuessMode,
 } from '../../game';
-import { CALIBRATION_INFO, RAW_GATE, rawForScore, runSelfCheck, useSimilarity, type SelfCheckReport } from '../../similarity';
+import {
+  CALIBRATION_INFO,
+  LINK_RAW_FLOOR,
+  RAW_GATE,
+  rawForScore,
+  runSelfCheck,
+  useSimilarity,
+  type SelfCheckReport,
+} from '../../similarity';
 import { AppText, Button, Card, Chip, Screen, Segmented, Stepper, ToggleRow } from '../components';
 import { formatRaw, formatScore, formatThreshold, pluralize, stepThreshold } from '../format';
 import { useSettings } from '../SettingsContext';
@@ -124,7 +132,8 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
     settings.threshold === DEFAULT_SETTINGS.threshold &&
     settings.turnsPerPlayer === DEFAULT_SETTINGS.turnsPerPlayer &&
     settings.guessMode === DEFAULT_SETTINGS.guessMode &&
-    settings.requireDictionaryNoun === DEFAULT_SETTINGS.requireDictionaryNoun;
+    settings.requireDictionaryNoun === DEFAULT_SETTINGS.requireDictionaryNoun &&
+    settings.useWordLinks === DEFAULT_SETTINGS.useWordLinks;
 
   return (
     <Screen testID="screen-settings" title="Settings" onBack={onBack} backLabel="Home">
@@ -189,6 +198,15 @@ export function SettingsScreen({ onBack }: SettingsScreenProps) {
           description="Only accept clues found in the built-in list of about 32,000 nouns. Turn off to allow any single word."
           value={settings.requireDictionaryNoun}
           onValueChange={(requireDictionaryNoun) => update({ requireDictionaryNoun })}
+        />
+      </Card>
+
+      <Card>
+        <ToggleRow
+          label="Accept linked words"
+          description={`Also accept a clue below the threshold when a dictionary (WordNet or ConceptNet) links it to the secret word, such as "root" (part of a tree) or "lock" (goes with key). The model still has to see some connection: a raw cosine of at least ${formatRaw(LINK_RAW_FLOOR)}.`}
+          value={settings.useWordLinks}
+          onValueChange={(useWordLinks) => update({ useWordLinks })}
         />
       </Card>
 

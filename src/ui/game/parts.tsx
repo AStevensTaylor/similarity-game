@@ -10,7 +10,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { GIVER_REWARDS, MAX_CLUE_ROUNDS, type ClueAttempt, type RoundRecord, type TurnSummary } from '../../game';
 import { AppText, Avatar, Button, Card, Chip, ScoreMeter } from '../components';
-import { formatGain, formatPoints, formatScore, joinNames, rankLabel, rankSpoken } from '../format';
+import {
+  describeLink,
+  formatGain,
+  formatLinkSources,
+  formatPoints,
+  formatScore,
+  joinNames,
+  rankLabel,
+  rankSpoken,
+} from '../format';
 import { MAX_CONTENT_WIDTH, radius, spacing, useTheme } from '../theme';
 
 /** What everybody may know about a player. */
@@ -188,7 +197,7 @@ export function CluesGivenSoFar({ rounds }: { rounds: readonly RoundRecord[] }) 
             {`${round.round}. ${round.clue}`}
           </AppText>
           <AppText variant="caption" color="muted">
-            {`Scored ${formatScore(round.score)} - nobody guessed the word.`}
+            {`Scored ${formatScore(round.score)}${round.link ? ` (counted as a word link: ${describeLink(round.link)})` : ''} - nobody guessed the word.`}
           </AppText>
         </Card>
       ))}
@@ -427,13 +436,20 @@ export function TurnResultBody({ summary, players }: TurnResultBodyProps) {
           </AppText>
           <Card>
             {summary.clues.map((clue, i) => (
-              <View key={clue.clue} style={styles.spreadRow}>
-                <AppText variant="bodyLarge" style={[styles.bold, styles.flex]}>
-                  {`${i + 1}. ${clue.clue}`}
-                </AppText>
-                <AppText color="muted" accessibilityLabel={`similarity score ${formatScore(clue.score)}`}>
-                  {formatScore(clue.score)}
-                </AppText>
+              <View key={clue.clue}>
+                <View style={styles.spreadRow}>
+                  <AppText variant="bodyLarge" style={[styles.bold, styles.flex]}>
+                    {`${i + 1}. ${clue.clue}`}
+                  </AppText>
+                  <AppText color="muted" accessibilityLabel={`similarity score ${formatScore(clue.score)}`}>
+                    {formatScore(clue.score)}
+                  </AppText>
+                </View>
+                {clue.link ? (
+                  <AppText variant="caption" color="muted">
+                    {`Counted as a word link: ${describeLink(clue.link)} (${formatLinkSources(clue.link)}).`}
+                  </AppText>
+                ) : null}
               </View>
             ))}
           </Card>

@@ -2,7 +2,7 @@
  * One clue submission, end to end: rule check -> model score -> the engine
  * action to dispatch. Kept free of React so it can be tested directly.
  */
-import { validateClue, type GameAction, type GameState } from '../../game';
+import { cluePasses, validateClue, type GameAction, type GameState, type WordLink } from '../../game';
 import type { SimilarityResult } from '../../similarity';
 
 export type ClueAttemptResult =
@@ -10,7 +10,16 @@ export type ClueAttemptResult =
   | { kind: 'invalid'; message: string }
   /** The model could not score it; nothing is recorded, the giver may retry. */
   | { kind: 'error'; message: string }
-  | { kind: 'scored'; accepted: boolean; clue: string; score: number; raw: number; action: GameAction };
+  | {
+      kind: 'scored';
+      accepted: boolean;
+      clue: string;
+      score: number;
+      raw: number;
+      /** Set when the clue passed below the threshold because of this dictionary link. */
+      link?: WordLink;
+      action: GameAction;
+    };
 
 export interface ClueAttemptDeps {
   similarity(a: string, b: string): Promise<SimilarityResult>;
@@ -46,14 +55,15 @@ export async function attemptClue(input: string, state: GameState, deps: ClueAtt
     return { kind: 'error', message: describeError('the model returned an invalid score') };
   }
 
-  // Same comparison the engine makes, so the dispatched action is always valid.
-  const accepted = result.score >= state.settings.threshold;
-  return {
-    kind: 'scored',
-    accepted,
-    clue: validation.clue,
-    score: result.score,
-    raw: result.raw,
-    action: { type: accepted ? 'CLUE_ACCEPTED' : 'CLUE_REJECTED', clue: validation.clue, score: result.score },
-  };
+  // Same rule the engine applies, so the dispatched action is always valid.
+  const accepted = cluePasses(state.settings, result.score, result.link);
+  const clue = validation.clue;
+  const score = result.score;
+  if (!accepted) {
+    return { kind: 'scored', accepted, clue, score, raw: result.raw, action: { type: 'CLUE_REJECTED', clue, score } };
+  }
+  const link = score < state.settings.threshold ? result.link : undefined;
+  return link
+    ? { kind: 'scored', accepted, clue, score, raw: result.raw, link, action: { type: 'CLUE_ACCEPTED', clue, score, link } }
+    : { kind: 'scored', accepted, clue, score, raw: result.raw, action: { type: 'CLUE_ACCEPTED', clue, score } };
 }

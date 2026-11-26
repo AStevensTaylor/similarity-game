@@ -150,7 +150,7 @@ export function SetupScreen({ onBack, onStart, initialNames }: SetupScreenProps)
             'turn',
           )} in total) - clue threshold ${formatThreshold(settings.threshold)} - ${
             settings.guessMode === 'list' ? 'guessers pick from the five words' : 'guessers type any word'
-          }. Change these in Settings.`}
+          }${settings.useWordLinks ? '' : ' - linked words not accepted'}. Change these in Settings.`}
         </AppText>
       </Card>
     </Screen>

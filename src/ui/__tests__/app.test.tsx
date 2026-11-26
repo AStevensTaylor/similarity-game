@@ -49,6 +49,19 @@ afterEach(() => {
 });
 
 describe('App', () => {
+  it('the checker shows a word link and passes a linked pair below the threshold', async () => {
+    const ui = await render(<App />);
+    await ui.press('home-checker');
+    // The test embedder scores "mid..." words at 0.900 against ordinary words; WordNet links midge and gnat.
+    await ui.type('checker-a', 'midge');
+    await ui.type('checker-b', 'gnat');
+    await ui.press('check');
+    expect(ui.byTestId('checker-score').children).toEqual(['0.900']);
+    expect(ui.allText()).toContain('would pass as a clue: the words are linked');
+    expect(ui.byTestId('checker-link').children.join('')).toBe('Word link: "midge" is a kind of "gnat" (WordNet).');
+    await ui.unmount();
+  });
+
   it('shows home with the model status and reaches every screen', async () => {
     const ui = await render(<App />);
     expect(ui.byTestId('screen-home')).toBeTruthy();
@@ -110,6 +123,7 @@ describe('App', () => {
       threshold: 0.94,
       guessMode: 'open',
       requireDictionaryNoun: true,
+      useWordLinks: true,
     });
     await ui.press('run-self-check');
     expect(ui.byTestId('self-check-report')).toBeTruthy();

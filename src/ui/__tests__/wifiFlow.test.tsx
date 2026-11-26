@@ -51,7 +51,7 @@ const TUNING: WifiFlowTuning = {
 };
 
 function settings(overrides: Partial<GameSettings> = {}): GameSettings {
-  return { turnsPerPlayer: 1, threshold: 0.95, guessMode: 'open', requireDictionaryNoun: false, ...overrides };
+  return { turnsPerPlayer: 1, threshold: 0.95, guessMode: 'open', requireDictionaryNoun: false, useWordLinks: true, ...overrides };
 }
 
 /** What one phone remembers about its last seat. The storage mock is shared by all virtual phones, so each gets its own. */

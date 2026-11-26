@@ -452,7 +452,7 @@ describe('the host goes away', () => {
     const found: FoundHost[][] = [];
     const stopBrowsing = h.adapters[1].browse({ onChange: (hosts) => found.push(hosts), onError: () => undefined });
     await flush();
-    expect(found[found.length - 1]).toEqual([{ name: 'Host', host: HOST_ADDRESS, port: h.port, txt: { v: '1' } }]);
+    expect(found[found.length - 1]).toEqual([{ name: 'Host', host: HOST_ADDRESS, port: h.port, txt: { v: '2' } }]);
 
     const stopped = h.host.stop();
     await advance(1000);
@@ -775,7 +775,7 @@ describe("the host's own player uses the same projected view as everybody else",
     const h = await setup({ players: 1, startGame: false });
     const raw = await rawJoin(h, 'Wire');
     expect(raw.received.map((m) => m.t)).toEqual(['welcome', 'view']);
-    expect(raw.received[0]).toEqual({ v: 1, t: 'welcome', seat: 1, name: 'Wire' });
+    expect(raw.received[0]).toEqual({ v: 2, t: 'welcome', seat: 1, name: 'Wire' });
     await h.start();
     expect(raw.gameView()).toMatchObject({ phase: 'choose-word', role: 'guesser', giver: null, guessOptions: null });
   });

@@ -1,4 +1,5 @@
 /** Session history of the similarity checker. Pure. */
+import type { WordLink } from '../game';
 
 export interface CheckEntry {
   id: number;
@@ -6,6 +7,8 @@ export interface CheckEntry {
   b: string;
   raw: number;
   score: number;
+  /** Dictionary link between the two words, when one counts (see SimilarityResult.link). */
+  link?: WordLink;
 }
 
 export const MAX_CHECK_HISTORY = 10;

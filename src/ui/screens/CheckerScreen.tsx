@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
+import { cluePasses } from '../../game';
 import { useSimilarity } from '../../similarity';
 import { addCheck, type CheckEntry } from '../checkHistory';
 import { AppText, Button, Card, Chip, ScoreMeter, Screen, TextField, type TextFieldHandle } from '../components';
-import { formatRaw, formatScore, formatThreshold } from '../format';
+import { describeLink, formatLinkSources, formatRaw, formatScore, formatThreshold } from '../format';
 import { useSettings } from '../SettingsContext';
 import { spacing } from '../theme';
 import { ModelStatus } from './HomeScreen';
@@ -48,9 +49,11 @@ export function CheckerScreen({ onBack, history, onHistoryChange }: CheckerScree
     setBusy(true);
     setError(null);
     try {
-      const { raw, score } = await similarity(wordA, wordB);
+      const { raw, score, link } = await similarity(wordA, wordB);
       if (!Number.isFinite(raw) || !Number.isFinite(score)) throw new Error('the model returned an invalid score');
-      const entry: CheckEntry = { id: Date.now(), a: wordA, b: wordB, raw, score };
+      const entry: CheckEntry = link
+        ? { id: Date.now(), a: wordA, b: wordB, raw, score, link }
+        : { id: Date.now(), a: wordA, b: wordB, raw, score };
       onHistoryChange(addCheck(historyRef.current, entry));
       if (mounted.current) setResult(entry);
     } catch (e) {
@@ -64,7 +67,10 @@ export function CheckerScreen({ onBack, history, onHistoryChange }: CheckerScree
     }
   };
 
-  const passes = result !== null && result.score >= threshold;
+  const wouldPass = (e: CheckEntry) => cluePasses(settings, e.score, e.link);
+  const passes = result !== null && wouldPass(result);
+  /** True when only the word link (not the score) makes the pair pass. */
+  const passesByLink = result !== null && passes && result.score < threshold;
 
   return (
     <Screen
@@ -147,14 +153,24 @@ export function CheckerScreen({ onBack, history, onHistoryChange }: CheckerScree
           <Chip
             tone={passes ? 'success' : 'danger'}
             label={
-              passes
-                ? `Would pass as a clue at ${formatThreshold(threshold)}`
-                : `Would not pass as a clue at ${formatThreshold(threshold)}`
+              passesByLink
+                ? 'Would pass as a clue: the words are linked'
+                : passes
+                  ? `Would pass as a clue at ${formatThreshold(threshold)}`
+                  : `Would not pass as a clue at ${formatThreshold(threshold)}`
             }
           />
+          {result.link ? (
+            <AppText testID="checker-link" variant="caption">
+              {`Word link: ${describeLink(result.link)} (${formatLinkSources(result.link)}).${
+                settings.useWordLinks ? '' : ' Word links are turned off in Settings, so it does not count.'
+              }`}
+            </AppText>
+          ) : null}
           <AppText variant="caption" color="muted">
-            The calibrated score is a fixed rescaling of the raw BERT cosine. In a game a clue must also follow the word
-            rules (single dictionary noun, not a form of the five offered words), which this checker does not apply.
+            The calibrated score is a fixed rescaling of the raw BERT cosine. A clue below the threshold also passes when a
+            dictionary links the two words (word links, in Settings). In a game a clue must also follow the word rules
+            (single dictionary noun, not a form of the five offered words), which this checker does not apply.
           </AppText>
         </Card>
       ) : (
@@ -174,15 +190,17 @@ export function CheckerScreen({ onBack, history, onHistoryChange }: CheckerScree
               key={entry.id}
               accessible
               accessibilityLabel={`${entry.a} and ${entry.b}: score ${formatScore(entry.score)}, raw cosine ${formatRaw(entry.raw)}, ${
-                entry.score >= threshold ? 'would pass' : 'would not pass'
+                wouldPass(entry) ? 'would pass' : 'would not pass'
               }`}
               style={styles.historyRow}
             >
               <View style={styles.flex}>
                 <AppText style={styles.bold}>{`${entry.a} / ${entry.b}`}</AppText>
-                <AppText variant="caption" color="muted">{`raw cosine ${formatRaw(entry.raw)}`}</AppText>
+                <AppText variant="caption" color="muted">{`raw cosine ${formatRaw(entry.raw)}${
+                  entry.link ? ` - linked: ${entry.link.relation}` : ''
+                }`}</AppText>
               </View>
-              <AppText variant="title" color={entry.score >= threshold ? 'success' : 'text'}>
+              <AppText variant="title" color={wouldPass(entry) ? 'success' : 'text'}>
                 {formatScore(entry.score)}
               </AppText>
             </Card>

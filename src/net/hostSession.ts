@@ -20,8 +20,18 @@
  * All inbound events, timer callbacks and loopback deliveries run through one
  * FIFO queue, so the session is never re-entered.
  */
-import { MAX_PLAYERS, createGame, gameReducer, normalizeWord, sanitizeSettings, validateClue } from '../game';
-import type { GameAction, GameSettings, GameState } from '../game';
+import {
+  MAX_PLAYERS,
+  cluePasses,
+  copyLink,
+  createGame,
+  gameReducer,
+  isWordLink,
+  normalizeWord,
+  sanitizeSettings,
+  validateClue,
+} from '../game';
+import type { GameAction, GameSettings, GameState, WordLink } from '../game';
 import { ClientSession } from './clientSession';
 import {
   MAX_WORD_INPUT_LENGTH,
@@ -42,7 +52,7 @@ import { canForfeitGiver, canStartGame, netPhase, projectView, skippableSeats } 
 import type { ContinueBy, SessionSeat, SessionState } from './view';
 
 /** Scores a clue against the hidden word; the UI passes useSimilarity().similarity. */
-export type ScoreFn = (clue: string, hiddenWord: string) => Promise<{ raw: number; score: number }>;
+export type ScoreFn = (clue: string, hiddenWord: string) => Promise<{ raw: number; score: number; link?: WordLink }>;
 
 export interface HostSessionOptions {
   adapter: NetworkAdapter;
@@ -1129,7 +1139,7 @@ export class HostSession {
       this.run(() => this.finishScoring(job, scoringError('it took too long')));
     }, this.o.scoreTimeoutMs);
 
-    let scored: Promise<{ raw: number; score: number }>;
+    let scored: Promise<{ raw: number; score: number; link?: WordLink }>;
     try {
       scored = Promise.resolve(this.o.score(validation.clue, game.hiddenWord));
     } catch (e) {
@@ -1145,7 +1155,7 @@ export class HostSession {
     // The turn moved on (forfeit, abandoned, new game, stop) or the job timed out: ignore.
     if (this.scoringJob !== job) return;
     const game = this.state.game;
-    const r = result as { raw?: unknown; score?: unknown } | null;
+    const r = result as { raw?: unknown; score?: unknown; link?: unknown } | null;
     if (
       !game ||
       typeof r !== 'object' ||
@@ -1160,15 +1170,30 @@ export class HostSession {
     }
     const score = Math.min(1, Math.max(0, r.score));
     const raw = Math.min(1, Math.max(-1, r.raw));
-    // Same comparison the engine makes, so the dispatched action is always valid.
-    const accepted = score >= game.settings.threshold;
-    const applied = this.dispatch({ type: accepted ? 'CLUE_ACCEPTED' : 'CLUE_REJECTED', clue: job.clue, score });
+    const found = isWordLink(r.link) ? copyLink(r.link) : null;
+    // Same rule the engine applies, so the dispatched action is always valid.
+    const accepted = cluePasses(game.settings, score, found);
+    const link = accepted && score < game.settings.threshold && found !== null ? found : null;
+    const applied = this.dispatch(
+      !accepted
+        ? { type: 'CLUE_REJECTED', clue: job.clue, score }
+        : link
+          ? { type: 'CLUE_ACCEPTED', clue: job.clue, score, link }
+          : { type: 'CLUE_ACCEPTED', clue: job.clue, score },
+    );
     if (!applied) {
       this.finishScoring(job, { kind: 'error', message: 'That clue could not be counted. Try again.' });
       return;
     }
     if (accepted) this.state = { ...this.state, pendingGuesses: {} };
-    this.finishScoring(job, { kind: accepted ? 'accepted' : 'rejected', clue: job.clue, score, raw });
+    this.finishScoring(
+      job,
+      !accepted
+        ? { kind: 'rejected', clue: job.clue, score, raw }
+        : link
+          ? { kind: 'accepted', clue: job.clue, score, raw, link: copyLink(link) }
+          : { kind: 'accepted', clue: job.clue, score, raw },
+    );
   }
 
   private finishScoring(job: ScoringJob, result: ClueResult): void {

@@ -1,5 +1,5 @@
-import { calibrate } from './calibration';
-import type { Embedder, SimilarityResult, SimilarityService } from './types';
+import { calibrate, LINK_RAW_FLOOR } from './calibration';
+import type { Embedder, FindLink, SimilarityResult, SimilarityService } from './types';
 
 export const DEFAULT_CACHE_SIZE = 500;
 
@@ -38,8 +38,9 @@ export function normaliseWord(input: string): string {
  */
 export function createSimilarityService(
   embedder: Embedder,
-  options: { cacheSize?: number } = {},
+  options: { cacheSize?: number; findLink?: FindLink | null } = {},
 ): SimilarityService {
+  const findLink = options.findLink ?? null;
   const cacheSize = Math.max(1, Math.floor(options.cacheSize ?? DEFAULT_CACHE_SIZE));
   // Map iteration order is insertion order, so the first key is the least recently used.
   const cache = new Map<string, Float32Array>();
@@ -78,7 +79,12 @@ export function createSimilarityService(
     // second one unhandled; the queue still runs them one after the other.
     const [va, vb] = await Promise.all([embed(a), embed(b)]);
     const raw = cosine(va, vb);
-    return { raw, score: calibrate(raw) };
+    const result: SimilarityResult = { raw, score: calibrate(raw) };
+    if (findLink !== null && raw >= LINK_RAW_FLOOR) {
+      const link = findLink(normaliseWord(a), normaliseWord(b));
+      if (link !== null) result.link = link;
+    }
+    return result;
   }
 
   return { similarity, embed };

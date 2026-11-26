@@ -28,6 +28,7 @@ export function serializeSettings(settings: GameSettings): string {
     threshold: s.threshold,
     guessMode: s.guessMode,
     requireDictionaryNoun: s.requireDictionaryNoun,
+    useWordLinks: s.useWordLinks,
   });
 }
 
@@ -41,6 +42,7 @@ export function parseSettings(raw: string | null | undefined): GameSettings {
     guessMode: v.guessMode === 'list' || v.guessMode === 'open' ? v.guessMode : DEFAULT_SETTINGS.guessMode,
     requireDictionaryNoun:
       typeof v.requireDictionaryNoun === 'boolean' ? v.requireDictionaryNoun : DEFAULT_SETTINGS.requireDictionaryNoun,
+    useWordLinks: typeof v.useWordLinks === 'boolean' ? v.useWordLinks : DEFAULT_SETTINGS.useWordLinks,
   });
 }
 

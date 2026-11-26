@@ -20,9 +20,10 @@ Created in [T3 Code](https://t3.codes).
 A game is a series of turns; every player is the clue-giver the same number of times (1 to 5, default 2).
 
 1. The clue-giver privately sees 5 random nouns and picks one as the secret word.
-2. They type a clue: a single noun. It is **accepted** only if its similarity score with the secret word
-   reaches the threshold (default 0.95, adjustable from 0.80 to 0.99). A rejected clue shows its score
-   to the clue-giver only, and they try another.
+2. They type a clue: a single noun. It is **accepted** if its similarity score with the secret word
+   reaches the threshold (default 0.95, adjustable from 0.80 to 0.99), or if a dictionary links the two
+   words (see [Word links](#word-links); can be turned off). A rejected clue shows its score to the
+   clue-giver only, and they try another.
 3. Once a clue is accepted, every other player privately makes one guess. Nobody sees anyone else's
    guess until all are in; then all guesses are revealed.
 4. If somebody named the secret word the turn ends. Otherwise the clue-giver gives another clue. A turn
@@ -72,6 +73,36 @@ Settings has a self-check that measures how far the phone's quantised model is f
 for calibration.
 
 The model judges how words are used in text, not dictionary meaning, so it can be surprising.
+
+## Word links
+
+The model misses some obvious connections, mostly "part of" and "goes with" pairs: tree / root scores
+0.948, car / wheel 0.915, key / lock 0.881, flower / petal 0.683. So the app also carries a table of about
+80,000 links between its dictionary nouns (`src/data/links.json`, 1.1 MB), built by
+`npm run build-links` from two sources:
+
+- **WordNet 3.1**: same meaning, kind of (direct hypernym), part of, member of, made of, opposites and
+  noun-to-noun derivations (oboe / oboist), using only each word's common senses.
+- **ConceptNet 5.7**: Open Mind Common Sense facts (part of, has, made of, used for, causes, found at),
+  word associations from the Verbosity game, and Wiktionary synonyms and related terms.
+
+Each source edge earns evidence points and a pair needs 1 point. Strong edges (any WordNet relation, a
+common-sense "part of" fact, a strong Verbosity association) count fully; noisy ones (one Wiktionary
+"related term", one "found at" fact, a weak association) count half, so they need something else to
+agree. Pairs where one word contains the other are left out (they are not allowed as clues anyway).
+
+With **Accept linked words** on (the default), a clue below the threshold is accepted when such a link
+joins it to the secret word **and** the raw cosine is at least `LINK_RAW_FLOOR` (0.25). The floor drops
+links that rely on a rare sense of a word ("bread" as money). It was chosen by reading samples of linked
+pairs in each cosine band: below 0.25 the share of odd links rises. The similarity checker shows the link
+it found, and after a turn the clue list says which clues counted because of a link. In Wi-Fi games the
+link is only sent to the clue-giver until the word is revealed, because it names the secret word.
+
+Against human ratings (pairs in the bottom and top thirds of each benchmark, counting a pair as passing
+the default threshold), links raise the share of closely related pairs that pass from 64% to 81% on
+SimLex-999 nouns, 49% to 81% on MTurk-771 and 37% to 54% on WordSim-353 relatedness. The share of
+unrelated pairs that pass rises from 1% to 9% on MTurk-771 and from 18% to 29% on SimLex-999 (mostly
+antonyms such as presence / absence, which SimLex rates low by design but are fair clues here).
 
 ## Pass-and-play vs Wi-Fi
 
@@ -125,7 +156,8 @@ across different networks or over the internet.
 App.tsx                 state-machine navigation (no router library)
 src/game/               pure rules engine: createGame, gameReducer, validateClue, selectors
 src/similarity/         on-device embeddings -> raw cosine -> calibrated score; useSimilarity()
-src/data/               deck.json (words offered to clue-givers), nouns.json (clue dictionary)
+src/data/               deck.json (words offered to clue-givers), nouns.json (clue dictionary),
+                        links.json + links.ts (WordNet / ConceptNet word links)
 src/storage/            AsyncStorage persistence of settings, player names, Wi-Fi name
 src/net/                local-network multiplayer core (framework-free)
   transport.ts            contract between sessions and a network
@@ -140,7 +172,7 @@ src/ui/
   screens/                home, setup, settings, similarity checker, how to play
   game/                   pass-and-play screens; parts.tsx holds the presentational pieces both modes share
   net/                    Wi-Fi screens: entry/discovery, lobby, networked game, connection states
-tools/                  calibrate.mjs, fetch-model.mjs
+tools/                  calibrate.mjs, fetch-model.mjs, build-links.mjs
 assets/model/           the bundled model (.pte) and tokenizer
 patches/                patch-package patch for react-native-tcp-socket
 app.config.js           release version / build number from the environment, on top of app.json
@@ -322,12 +354,17 @@ suite uses a real socket or the real model.
 npm run calibrate           # recompute RAW_GATE and prune unplayable deck words
 npm run calibrate -- --dry-run
 npm run fetch-model         # re-download and verify the bundled model assets
+npm run build-links         # rebuild src/data/links.json from WordNet and ConceptNet
 ```
 
 `tools/calibrate.mjs` runs the fp32 ONNX export of the same weights in Node (downloaded to `.cache/`),
 embeds every dictionary and deck word, picks the raw cosine at which about 90% of deck words still have
 at least 8 valid clues, writes `src/similarity/calibration.generated.json`, and removes deck words that
 have fewer than 3 valid clues at that gate. Re-running it is idempotent.
+
+`tools/build-links.mjs` downloads WordNet 3.1 (12 MB) and the ConceptNet 5.7 assertions dump (475 MB)
+into `.cache/links/`, checks both against pinned SHA-256 hashes, and writes `src/data/links.json`
+(see [Word links](#word-links)). Run it again after changing `nouns.json`: links are stored by noun index.
 
 ## Licences
 
@@ -336,6 +373,9 @@ have fewer than 3 valid clues at that gate. Re-running it is idempotent.
   [software-mansion/react-native-executorch-all-MiniLM-L6-v2](https://huggingface.co/software-mansion/react-native-executorch-all-MiniLM-L6-v2).
 - Word lists: derived from WordNet 3.1 (Copyright 2011 Princeton University), filtered for common words
   with the SCOWL word lists.
+- Word links (`src/data/links.json`): derived from WordNet 3.1 and from
+  [ConceptNet 5.7](https://conceptnet.io/) (CC BY-SA 4.0; includes Open Mind Common Sense, Wiktionary
+  and Verbosity data). As a derivative of ConceptNet, `links.json` is licensed under CC BY-SA 4.0.
 - Full licence texts are in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt). Dependencies carry their
   own licences in `node_modules`.
 

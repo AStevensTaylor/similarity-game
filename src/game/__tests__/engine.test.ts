@@ -121,6 +121,7 @@ describe('constants', () => {
       threshold: 0.95,
       guessMode: 'open',
       requireDictionaryNoun: true,
+      useWordLinks: true,
     });
   });
 });

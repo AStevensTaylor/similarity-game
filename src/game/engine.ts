@@ -19,6 +19,8 @@ import { isCorrectGuess, normalizeWord } from './clues';
 import {
   FORFEIT_AFTER_REJECTIONS,
   GIVER_REWARDS,
+  LINK_RELATIONS,
+  LINK_SOURCES,
   MAX_CLUE_ROUNDS,
   MAX_PLAYERS,
   MAX_THRESHOLD,
@@ -29,6 +31,7 @@ import {
   OPTIONS_PER_TURN,
 } from './types';
 import type {
+  ClueAttempt,
   GameAction,
   GameSettings,
   GameState,
@@ -38,6 +41,7 @@ import type {
   RoundRecord,
   TurnOutcome,
   TurnSummary,
+  WordLink,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -100,6 +104,49 @@ function uniqueWords(deck: readonly string[]): string[] {
   return out;
 }
 
+/** True for a structurally valid WordLink (plain JSON, known relation and sources). */
+export function isWordLink(x: unknown): x is WordLink {
+  if (typeof x !== 'object' || x === null) return false;
+  const l = x as Record<string, unknown>;
+  return (
+    typeof l.relation === 'string' &&
+    (LINK_RELATIONS as readonly string[]).includes(l.relation) &&
+    typeof l.from === 'string' &&
+    l.from.length > 0 &&
+    typeof l.to === 'string' &&
+    l.to.length > 0 &&
+    l.from !== l.to &&
+    Array.isArray(l.sources) &&
+    l.sources.length > 0 &&
+    l.sources.length <= LINK_SOURCES.length &&
+    l.sources.every((src) => typeof src === 'string' && (LINK_SOURCES as readonly string[]).includes(src)) &&
+    new Set(l.sources).size === l.sources.length
+  );
+}
+
+/** A fresh copy of a link, so state never shares objects with actions or views. */
+export function copyLink(link: WordLink): WordLink {
+  return { relation: link.relation, from: link.from, to: link.to, sources: link.sources.slice() };
+}
+
+/**
+ * The rule every clue is judged by: it reaches the threshold, or word links are
+ * on and a dictionary links it to the hidden word.
+ */
+export function cluePasses(settings: GameSettings, score: number, link: WordLink | null | undefined): boolean {
+  return score >= settings.threshold || (settings.useWordLinks && link != null && isWordLink(link));
+}
+
+/** The link to record for a clue accepted below the threshold, or null if it does not justify acceptance. */
+function linkForClue(state: GameState, clue: string, link: unknown): WordLink | null {
+  if (!state.settings.useWordLinks || !isWordLink(link) || state.hiddenWord === null) return null;
+  // The link must join exactly this clue and this hidden word.
+  const hidden = state.hiddenWord;
+  if (clue === hidden) return null;
+  if (!((link.from === clue && link.to === hidden) || (link.from === hidden && link.to === clue))) return null;
+  return copyLink(link);
+}
+
 /** Clamps settings into their legal ranges (turnsPerPlayer 1-5, threshold 0.80-0.99 in 0.01 steps). */
 export function sanitizeSettings(settings: GameSettings): GameSettings {
   const turns = Number.isFinite(settings.turnsPerPlayer) ? Math.round(settings.turnsPerPlayer) : MIN_TURNS_PER_PLAYER;
@@ -109,6 +156,7 @@ export function sanitizeSettings(settings: GameSettings): GameSettings {
     threshold: Math.round(Math.min(MAX_THRESHOLD, Math.max(MIN_THRESHOLD, threshold)) * 100) / 100,
     guessMode: settings.guessMode === 'list' ? 'list' : 'open',
     requireDictionaryNoun: settings.requireDictionaryNoun !== false,
+    useWordLinks: settings.useWordLinks !== false,
   };
 }
 
@@ -181,7 +229,9 @@ function summarize(
     roundsPlayed: rounds.length,
     giverPoints,
     correctGuesserIds: outcome === 'guessed' && last ? last.correctGuesserIds.slice() : [],
-    clues: state.acceptedClues.map((c) => ({ clue: c.clue, score: c.score })),
+    clues: state.acceptedClues.map((c) =>
+      c.link ? { clue: c.clue, score: c.score, link: copyLink(c.link) } : { clue: c.clue, score: c.score },
+    ),
   };
 }
 
@@ -266,6 +316,7 @@ function resolveRound(state: GameState, guesses: Guess[]): GameState {
     round: state.clueRound,
     clue: accepted.clue,
     score: accepted.score,
+    ...(accepted.link ? { link: copyLink(accepted.link) } : {}),
     guesses,
     anyCorrect,
     correctGuesserIds,
@@ -356,11 +407,14 @@ export function gameReducer(state: GameState, action: GameAction, deck: readonly
         };
       }
 
-      if (!passes) return state;
+      // Below the threshold, only a dictionary link to the hidden word lets the clue pass.
+      const link = passes ? null : linkForClue(state, clue, action.link);
+      if (!passes && link === null) return state;
+      const attempt: ClueAttempt = link === null ? { clue, score: action.score } : { clue, score: action.score, link };
       return {
         ...state,
         phase: 'handoff-guesser',
-        acceptedClues: [...state.acceptedClues, { clue, score: action.score }],
+        acceptedClues: [...state.acceptedClues, attempt],
         rejectedThisRound: [],
         triedClues: [...state.triedClues, clue],
         guesserPos: 0,

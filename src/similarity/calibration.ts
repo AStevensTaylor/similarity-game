@@ -7,6 +7,16 @@ import generated from './calibration.generated.json';
  */
 export const RAW_GATE: number = generated.rawGate;
 
+/**
+ * Lowest raw cosine at which a dictionary link may lift a clue over the
+ * threshold. Links that rely on a rare sense of a word ("bread" as money,
+ * "fin" as a five-dollar bill) mostly score below it; genuine ones such as
+ * flower / petal (0.37) and root / carrot (0.33) score above. Chosen by
+ * inspecting samples of WordNet / ConceptNet links at each cosine band
+ * (tools/build-links.mjs documents the link sources).
+ */
+export const LINK_RAW_FLOOR = 0.25;
+
 /** Calibrated score that RAW_GATE maps to (the default game threshold). */
 export const SCORE_GATE = 0.95;
 

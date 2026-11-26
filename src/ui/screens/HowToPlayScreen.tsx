@@ -10,7 +10,7 @@ import {
   MIN_PLAYERS,
   OPTIONS_PER_TURN,
 } from '../../game';
-import { CALIBRATION_INFO, RAW_GATE, SCORE_GATE } from '../../similarity';
+import { CALIBRATION_INFO, LINK_RAW_FLOOR, RAW_GATE, SCORE_GATE } from '../../similarity';
 import { AppText, Card, Screen } from '../components';
 import { formatRaw, formatThreshold } from '../format';
 import { useSettings } from '../SettingsContext';
@@ -56,7 +56,11 @@ export function HowToPlayScreen({ onBack }: HowToPlayScreenProps) {
           {`The clue-giver privately sees ${OPTIONS_PER_TURN} random nouns and picks one as the secret word.`}
         </Bullet>
         <Bullet>
-          {`They type a clue: a single noun. It is accepted only if its similarity score with the secret word is at least the threshold (${formatThreshold(settings.threshold)} right now). A rejected clue shows its score to the clue-giver only, and they try another.`}
+          {`They type a clue: a single noun. It is accepted if its similarity score with the secret word is at least the threshold (${formatThreshold(settings.threshold)} right now)${
+            settings.useWordLinks
+              ? ', or if a dictionary links the two words (see "Word links" below)'
+              : ''
+          }. A rejected clue shows its score to the clue-giver only, and they try another.`}
         </Bullet>
         <Bullet>
           Once a clue is accepted, every other player privately makes one guess (the phone is passed to each of them
@@ -162,6 +166,18 @@ export function HowToPlayScreen({ onBack }: HowToPlayScreenProps) {
         </AppText>
       </Section>
 
+      <Section title="Word links">
+        <AppText>
+          The model sometimes misses obvious connections: it rates "root" and "tree" just below the default threshold,
+          and "petal" and "flower" well below it. So the game also carries about 80,000 links between its nouns, taken
+          from two dictionaries: WordNet (same meaning, kind of, part of, member of, made of, opposites) and ConceptNet
+          (common-sense facts such as "a key is used for a lock", plus word associations people gave in a word game).
+        </AppText>
+        <AppText>
+          {`With "Accept linked words" on in Settings (${settings.useWordLinks ? 'it is on now' : 'it is off now'}), a clue below the threshold still counts when such a link joins it to the secret word, as long as the model sees at least some connection (a raw cosine of ${formatRaw(LINK_RAW_FLOOR)} or more). That filters out links that depend on a rare meaning of a word. After the turn, the clue list says which clues counted because of a link.`}
+        </AppText>
+      </Section>
+
       <Section title="Credits and licences">
         <AppText>
           Language model: sentence-transformers/all-MiniLM-L6-v2, licensed under Apache-2.0, run on-device with
@@ -170,6 +186,11 @@ export function HowToPlayScreen({ onBack }: HowToPlayScreenProps) {
         <AppText>
           Word lists: derived from WordNet 3.1 (Copyright 2011 Princeton University), filtered for common words using
           the SCOWL word lists.
+        </AppText>
+        <AppText>
+          Word links: WordNet 3.1 and ConceptNet 5.7 (conceptnet.io, licensed under CC BY-SA 4.0, which includes data
+          from Open Mind Common Sense, Wiktionary and the Verbosity game). The link table is shared under the same
+          licence.
         </AppText>
         <AppText variant="caption" color="muted">
           Full licence texts are in THIRD_PARTY_NOTICES.txt, distributed with the app's source.
